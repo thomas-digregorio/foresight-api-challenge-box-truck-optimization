@@ -1,0 +1,2 @@
+"""Core exceptions and utilities."""
+

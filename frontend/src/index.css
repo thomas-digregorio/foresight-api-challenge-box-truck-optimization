@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #f5f1e8;
+  font-family: "Space Grotesk", "IBM Plex Sans", "Avenir Next", sans-serif;
+  background:
+    radial-gradient(circle at top, rgba(217, 163, 67, 0.18), transparent 34%),
+    linear-gradient(180deg, #e7dfd3 0%, #d7d1c6 40%, #bbb6af 100%);
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  overflow: hidden;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.panel-glass {
+  background: linear-gradient(180deg, rgba(15, 23, 35, 0.82), rgba(15, 23, 35, 0.7));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(16px);
+}
+
+.range-meter {
+  background: linear-gradient(90deg, rgba(220, 161, 59, 0.18), rgba(85, 140, 96, 0.28));
+}
+

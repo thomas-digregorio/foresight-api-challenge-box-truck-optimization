@@ -1,0 +1,651 @@
+You are a senior simulation + full-stack engineer. Build a local truck-packing game/environment that mirrors the Dexterity Foresight API Challenge closely enough that I can later swap my local client for the real remote API with minimal rewrite.
+
+This is an ENGINE-FIRST project. The core engine must be deterministic and geometry-only. No real physics/settling yet, but leave clean extension points for future physics-based stability/settling.
+
+Primary goal
+Create a polished local game/environment that:
+1. Lets me manually play a truck-loading game in a 3D UI visually similar to the reference screenshot (file in current folder: "game_ui"):
+   - camera inside the truck looking toward the packed wall
+   - top-left density card
+   - right-side “Next” card with current box preview and dimensions
+   - big bottom-center “Start New Game” button
+   - white truck walls, wood floor, orange boxes, minimal chrome
+2. Exposes a local HTTP API with the same shape as the challenge API wherever possible (https://dexterity.ai/challenge/).
+3. Uses the same raw ACTION shape as the official API:
+   - `position: [x, y, z]`
+   - `orientation_wxyz: [w, x, y, z]`
+4. Uses the same raw OBSERVATION / game-state shape as the official API responses wherever possible (https://dexterity.ai/challenge/).
+5. Is ready for future agent work and later RL experimentation.
+6. Supports multiple in-memory parallel episodes later, but do NOT add any database, file logging, replay persistence, or analytics storage right now.
+
+Non-negotiable product decisions
+- Engine first
+- Deterministic geometry only
+- No persistence beyond what is required to run active in-memory episodes
+- Allow the same action format as the Foresight API Challenge, including quaternion input
+- Raw observation shape should mirror the official API response shape
+- Episode generator defaults to 120 randomly sized boxes in random order, but do NOT hardcode 120 as a global maximum in the engine
+- Support threshold = 90%
+- Manual UI timeout rule:
+  - 10 seconds per box
+  - on timeout, place the box at the latest valid potential spot the user was previewing/trying
+- RL-mode invalid action behavior:
+  - if the policy proposes an invalid raw action, do NOT commit it
+  - instead try to repair / search for another valid action automatically
+  - only fall back to timeout behavior if no valid action is found within the configured search budget
+- Leave room in code for future physics-based settling/stability, but v1 remains deterministic and geometry-only
+- No database
+- No file logging
+- No replay storage yet
+
+Tech stack
+Backend
+- Python 3.12
+- FastAPI
+- Pydantic v2
+- NumPy
+- SciPy Rotation utilities
+- Shapely for planar polygon overlap checks if useful
+- Pure Python geometry helpers for OBBs / SAT if needed
+
+Frontend
+- React
+- TypeScript
+- Vite
+- React Three Fiber
+- Drei
+- Zustand
+- Tailwind
+
+Testing
+- pytest for backend
+- minimal frontend utility tests if needed
+
+Do not use Docker initially.
+
+Architecture
+Use this repo structure:
+
+repo/
+  backend/
+    app/
+      api/
+      core/
+      engine/
+      models/
+      services/
+      rl/
+      tests/
+    main.py
+    pyproject.toml
+  frontend/
+    src/
+      app/
+      components/
+      features/game/
+      lib/
+      store/
+      types/
+    package.json
+  shared/
+    api_examples/
+  scripts/
+  README.md
+  Makefile
+
+Core architecture
+Build these layers:
+
+1. Pure engine layer (source of truth)
+- No FastAPI imports
+- No React/UI assumptions
+- No database/persistence assumptions
+- All geometry, validation, timers, queue progression, scoring, and active episode state live here
+
+2. Local API adapter
+- Thin FastAPI wrapper around the engine
+- Mirrors official endpoint/request/response field names wherever possible
+
+3. Manual-play frontend
+- Talks to local API
+- Sends preview updates to backend so timeout fallback can place the latest valid preview pose
+
+4. RL/parallel-ready adapters
+- Do NOT force strict Gymnasium compliance yet, because raw official observation is variable-length
+- Instead provide:
+  - a `RawEpisodeEnv` class with `reset()` and `step(action)` semantics returning raw dict observations
+  - a `ParallelEpisodeManager` / batched runner that can manage multiple in-memory episodes
+  - clear extension points for a future fixed-shape Gymnasium encoding wrapper
+
+Important design clarification about quaternions
+The local engine must ACCEPT raw quaternion actions exactly as the API does. However, because v1 is deterministic and geometry-only, define validity as follows:
+- any non-zero quaternion input is normalized
+- the resulting oriented cuboid geometry is computed from the quaternion
+- placements are allowed if they are geometrically valid and satisfy support/contact rules
+- to keep support logic tractable in v1, only placements whose resting/support face is effectively horizontal within tolerance are considered stable/valid for placement
+- continuous yaw around the vertical axis is allowed
+- arbitrary quaternion input is still accepted at the API boundary, but unstable “edge balancing” or unsupported tilted resting poses should be rejected in v1
+- add a future hook so a later settling/stability backend can accept more general poses
+
+This means:
+- transport/interface = full quaternion
+- v1 deterministic validity = gravity-compatible resting configurations only
+
+What a quaternion means in this codebase
+Document this in README and code comments:
+- orientation uses `[w, x, y, z]`
+- normalize before use
+- convert to rotation matrix for geometry
+- compute oriented box corners from center, dimensions, and quaternion
+- use quaternion everywhere at the API boundary and in stored state, even if support logic restricts which poses are valid in v1
+
+Truck and scoring
+Use the official truck dimensions:
+- depth (x): 2.0 m
+- width (y): 2.6 m
+- height (z): 2.75 m
+
+Coordinate convention:
+- origin at front-bottom-left
+- x increases toward the back of the truck
+- y increases left-to-right across width
+- z increases upward
+
+Density:
+density = total volume of placed boxes / (max_x_reached * truck_width * truck_height)
+If no placed boxes, density = 0.
+
+Core engine models
+Implement typed models for:
+- Truck
+- BoxSpec
+- CurrentBox
+- PlacedBox
+- PlacementAction
+- PreviewAction
+- ValidationResult
+- GameState
+- EpisodeTimerState
+- EngineConfig
+- TerminationInfo
+
+GameState should contain only what is required for active in-memory execution, including:
+- game_id
+- mode
+- truck
+- placed_boxes
+- remaining_boxes queue
+- current_box
+- density
+- game_status
+- created_at
+- current_box_deadline
+- latest_preview_action
+- latest_valid_preview_action
+- timeout_seconds
+- minimal internal metadata required for validation and UI
+Do NOT add persistence or analytics concerns.
+
+Parallel-run readiness
+Even though no persistence is needed, design for multiple concurrent in-memory episodes:
+- `EpisodeRegistry` mapping `game_id -> GameState`
+- engine methods should be episode-specific and not rely on globals except the registry/service
+- keep code thread-safe enough for local development (simple lock around registry mutations is enough)
+- no database
+
+Random episode generation
+Implement a configurable box generator with defaults:
+- default queue length: 120 boxes
+- random seed support
+- random order
+- random dimensions in realistic ranges
+- random weights
+- allow config overrides for:
+  - queue length
+  - dimension ranges
+  - weight ranges
+  - seed
+
+Important:
+- 120 is the default episode generator count, not a hard-coded engine maximum
+- raw observation/state should naturally support any number of placed/remaining boxes
+
+Geometry engine requirements
+This is the hard part. Implement real geometry, not a toy placeholder.
+
+1. Oriented cuboids
+- from box center, dimensions, quaternion -> compute 8 world-space corners
+- compute face normals and face polygons as needed
+- compute AABB for rendering/debug only
+- true collision uses OBB logic, not AABB-only shortcuts
+
+2. Bounds checking
+- all corners must remain inside the truck volume (with configurable epsilon)
+
+3. Collision detection
+- implement OBB-vs-OBB intersection using the Separating Axis Theorem (SAT)
+- reject placements intersecting any already placed box
+
+4. Support / stability validity for deterministic v1
+- floor support always valid if bottom contact is on z=0 plane within tolerance
+- otherwise require sufficient support from the union of top faces directly below
+- support threshold = 90% of the candidate box’s support footprint area
+- implement this in a deterministic, geometry-only way
+
+Recommended practical support rule for v1:
+- candidate resting face must be effectively horizontal
+- identify its support footprint polygon projected onto the horizontal plane
+- identify supporting top surfaces from boxes whose top face lies at the same support height within tolerance and whose top face is effectively horizontal
+- compute overlap area between candidate support footprint and union of supporting top polygons
+- valid if overlap area / footprint area >= 0.90
+
+This deliberately excludes tricky edge/corner balancing and true rigid-body settling.
+
+5. Contact snapping helpers
+Implement utility functions to:
+- snap a previewed candidate to the floor
+- snap a previewed candidate onto the top of a supporting box / support plane
+- optionally snap x/y gently to nearby boundaries for usability
+
+6. Feasibility helpers
+Implement search helpers to:
+- test if the current box has any valid placement
+- search nearby valid placements around a proposed raw action
+- this will be used for RL invalid-action repair and timeout fallback support
+
+7. Future physics hook
+Add clean interfaces such as:
+- `StabilityBackend`
+- `NoOpDeterministicStabilityBackend`
+- future `PhysicsStabilityBackend`
+In v1, use the no-op deterministic backend.
+
+Episode flow
+Each episode should work like this:
+- start game
+- current box is available
+- user manipulates preview pose in UI
+- backend stores latest preview pose and latest valid preview pose
+- user confirms placement OR timer expires
+- if confirmed placement is valid, commit it
+- if timer expires, commit the latest valid preview pose
+- advance to next box
+- repeat until stop, queue exhausted, or no feasible placement remains
+
+Timeout rule
+Each box gets 10 seconds.
+Implement this robustly in the backend, not only in the frontend.
+
+Store:
+- `current_box_started_at`
+- `current_box_deadline`
+- `latest_preview_action`
+- `latest_valid_preview_action`
+
+On timeout:
+- if `latest_valid_preview_action` exists for the current box, commit it automatically
+- else end/truncate the episode with timeout/no-valid-preview reason
+
+Preview updates
+Because timeout fallback depends on the latest spot the user may try, add a UI-only local endpoint or service call:
+- e.g. `POST /local/api/preview`
+This is NOT part of the official challenge API; it exists only for local manual play.
+
+Request:
+{
+  "game_id": "string",
+  "box_id": "string",
+  "position": [x, y, z],
+  "orientation_wxyz": [w, x, y, z]
+}
+
+Behavior:
+- normalize quaternion
+- validate as preview only
+- update `latest_preview_action`
+- if valid, also update `latest_valid_preview_action`
+- return preview validity, reasons, and derived metrics for the UI
+
+Official-like local API
+Under `/challenge/api`, implement:
+
+1. `POST /challenge/api/start`
+Request:
+{
+  "api_key": "string",
+  "mode": "dev" | "compete_stub",
+  "seed": optional int
+}
+
+Response:
+{
+  "game_id": "string",
+  "truck": { "depth": 2.0, "width": 2.6, "height": 2.75 },
+  "current_box": {
+    "id": "string",
+    "dimensions": [l, w, h],
+    "weight": number
+  },
+  "boxes_remaining": int,
+  "mode": "dev" | "compete_stub"
+}
+
+2. `POST /challenge/api/place`
+Request:
+{
+  "game_id": "string",
+  "box_id": "string",
+  "position": [x, y, z],
+  "orientation_wxyz": [w, x, y, z]
+}
+
+Response:
+{
+  "status": "ok" | "terminated",
+  "placed_boxes": [
+    {
+      "id": "string",
+      "position": [x, y, z],
+      "orientation_wxyz": [w, x, y, z],
+      "dimensions": [l, w, h]
+    }
+  ],
+  "current_box": {
+    "id": "string",
+    "dimensions": [l, w, h],
+    "weight": number
+  } | null,
+  "boxes_remaining": int,
+  "density": float,
+  "game_status": "in_progress" | "completed" | "timed_out" | "no_feasible_placement",
+  "termination_reason": string | null
+}
+
+3. `GET /challenge/api/status/{game_id}`
+Return the current raw episode snapshot in the same general shape.
+
+4. `POST /challenge/api/stop`
+Request:
+{
+  "game_id": "string",
+  "api_key": "string"
+}
+
+Response:
+- final episode state with `game_status = "completed"` and `termination_reason = "player_stop"`
+
+5. `GET /challenge/api/health`
+Return `{ "status": "ok" }`
+
+Local-only endpoints
+Implement:
+- `POST /local/api/preview`
+- optional `POST /local/api/recenter-camera` not necessary
+- optional `GET /local/api/debug/{game_id}` if helpful for UI overlays
+
+Validation error behavior
+Manual mode / API behavior:
+- invalid place action returns 422
+- game state remains unchanged
+
+Use structured errors:
+{
+  "error": "validation_error",
+  "message": "Human readable summary",
+  "details": {
+    "category": "out_of_bounds | overlap | insufficient_support | invalid_box_id | invalid_quaternion | timeout | game_completed | no_feasible_placement",
+    ...
+  }
+}
+
+Raw observation contract
+Internally and over HTTP, the canonical observation/state should mirror the official response style:
+- placed_boxes: variable length list
+- current_box or null
+- boxes_remaining
+- density
+- game_status
+- termination_reason
+- truck info where appropriate
+
+Do NOT artificially pad observations in the engine layer.
+Do NOT add database ids or persistence metadata to the observation contract.
+
+RL / future agent hooks
+I want future RL support, but the canonical engine observation must stay raw and variable-length.
+
+Implement these RL-oriented pieces now, without forcing full Gymnasium tensor compliance:
+
+1. `RawEpisodeEnv`
+Methods:
+- `reset(seed=None) -> raw_obs`
+- `step(action: dict | np.ndarray) -> (raw_obs, reward, terminated, truncated, info)`
+
+Behavior:
+- raw observation is the same variable-length dict shape as the local API
+- reward is sparse terminal density only:
+  - all intermediate steps: 0.0
+  - terminal natural completion: final density
+  - timeout / failure terminal cases: 0.0 unless otherwise justified
+- `terminated` for natural episode completion
+- `truncated` for timeout-driven endings
+
+2. Invalid RL action handling
+Per my requirement, invalid RL actions should trigger an attempt to try another valid action instead of just ending or committing invalid actions.
+
+Implement an `ActionRepairPolicy`:
+- input: current raw observation + proposed raw action
+- normalize quaternion
+- try exact action
+- if invalid:
+  - search nearby translations
+  - try snap-to-floor or snap-to-support-plane
+  - optionally adjust yaw slightly
+  - optionally project to nearest valid support plane
+- use configurable attempt budget / time budget
+- if a valid repaired action is found, commit it
+- if none found before budget expires, handle as timeout/truncation or no-valid-action according to engine rules
+
+This repair policy is for RL helper mode only.
+The canonical local API should still reject invalid explicit placements with 422.
+
+3. Parallel-run support
+Implement a simple in-memory parallel manager:
+- can create many episodes at once
+- can step a list of episodes with a list of actions
+- no database
+- no file logging
+- keep it simple and local
+
+4. Future extension note
+Add clear TODO/docstrings explaining that a future strict Gymnasium wrapper will require a fixed-shape observation encoding layer, but do NOT implement that encoding now.
+
+Manual-play frontend requirements
+Create a polished UI visually inspired by the provided screenshot.
+
+Layout (file in current folder: game_ui)
+- Full-screen app
+- Main central viewport inside truck
+- Top-left translucent card:
+  - Density: XX.X%
+  - Boxes placed: N
+- Right-side floating panel:
+  - “Next”
+  - current box 3D preview thumbnail
+  - current box dimensions
+- Bottom-center large primary button:
+  - Start New Game
+- Keep the initial UI very clean with minimal clutter
+- Once game starts, show subtle controls for rotate/confirm/help without destroying the clean look
+
+Visual style
+- Truck interior:
+  - white/light-gray side walls
+  - metallic rails/posts
+  - wood-like floor
+  - soft industrial lighting
+- Boxes:
+  - orange / amber cardboard look
+  - subtle roughness
+  - distinguish current preview box from placed boxes
+- Camera:
+  - default view from near the truck opening looking inward toward the packed wall
+  - orbit/pan/zoom allowed
+  - reset camera button
+
+Gameplay interaction
+Manual play should feel like a polished game/tool, not a developer panel.
+
+Implement:
+- live ghost preview of current box
+- preview color:
+  - green if valid
+  - red if invalid
+- mouse-driven placement interaction and keyboard buttons like in screenshot
+- helper controls:
+  - drag/move preview
+  - rotate preview
+  - snap to floor / snap to nearest support plane
+  - confirm placement
+- advanced panel or drawer for:
+  - direct numeric x/y/z
+  - direct quaternion input
+  - Euler-angle helper controls converted to quaternion
+  - timer display
+  - validity/debug reasons
+- countdown UI for 10-second timer
+- if timer expires, use latest valid preview action automatically
+
+Important UI note
+Even though the engine accepts quaternion actions, the UI should make this usable:
+- provide intuitive rotate controls
+- provide presets for common 90-degree orientations
+- provide advanced quaternion fields only in an expandable debug/advanced section
+- always display the actual quaternion being sent
+
+Preview loop
+The frontend must continuously or event-driven send preview updates to `/local/api/preview` whenever the ghost box pose changes, so the backend always knows the latest attempted valid preview.
+
+Game flow in UI
+- initial screen with big Start New Game button
+- on start:
+  - fetch episode
+  - enter play mode
+  - show current box in right panel
+  - show live timer
+  - show ghost preview
+- on place:
+  - call `/challenge/api/place`
+  - update scene with newly placed box
+  - load next box
+  - reset timer
+- on timeout:
+  - backend auto-places latest valid preview
+  - frontend refreshes state
+- on stop or completion:
+  - show final density and boxes placed
+  - offer Start New Game again
+
+Backend engine service design
+Implement:
+- `TruckPackingEngine`
+- `EpisodeService`
+- `PreviewService`
+- `ActionRepairPolicy`
+- `EpisodeRegistry`
+
+Useful engine methods:
+- `start_episode(...)`
+- `get_state(game_id)`
+- `validate_preview(...)`
+- `update_preview(...)`
+- `validate_place_action(...)`
+- `commit_place_action(...)`
+- `advance_to_next_box(...)`
+- `handle_timeout_if_needed(...)`
+- `find_valid_action_near(...)`
+- `find_any_valid_action(...)`
+- `compute_density(...)`
+- `has_feasible_placement(...)`
+
+Suggested implementation detail for feasible-placement probing
+Because game termination may depend on whether the current box can fit anywhere:
+- implement a coarse search routine using:
+  - sampled support planes (floor + top surfaces)
+  - sampled x/y candidate anchors
+  - sampled yaw values
+- use this for:
+  - timeout fallback assistance
+  - RL action repair
+  - optional “no feasible placement” termination
+
+Testing requirements
+Write real tests.
+
+Backend tests:
+- quaternion normalization
+- oriented-box corner generation
+- SAT OBB collision
+- bounds checks
+- support overlap rule at 90%
+- density calculation
+- preview update behavior
+- timeout auto-placement from latest valid preview
+- invalid action rejection in API mode
+- RL repair path can recover a nearby valid placement in simple cases
+- parallel registry can manage multiple active episodes independently
+
+Frontend tests:
+- only lightweight tests if useful
+- prioritize working UI over complex test scaffolding
+
+README requirements
+Write a strong README with:
+- project purpose
+- architecture overview
+- why engine-first
+- why raw API-shaped action/observation are preserved
+- why strict Gymnasium encoding is deferred
+- how timeout fallback via latest valid preview works
+- local API examples
+- how to run backend
+- how to run frontend
+- how to run tests
+- future roadmap:
+  - persistence/logging/database
+  - strict Gymnasium tensor wrapper
+  - real remote challenge API client
+  - physics-based settling/stability
+  - heuristic / search / RL agents
+
+Developer experience
+Use WSL/Linux-friendly commands.
+Provide:
+- Makefile or scripts for run/test
+- clear setup steps
+- avoid unnecessary complexity
+
+Do NOT
+- do not add a database
+- do not add file logging
+- do not add replay storage
+- do not force full Gymnasium spaces now
+- do not fake geometry with AABB-only collisions
+- do not hardcode only six axis-aligned orientations at the engine boundary
+- do not ignore quaternion input
+- do not leave the core engine as TODO stubs
+
+Implementation sequence
+1. Create repo structure
+2. Implement core engine first
+3. Implement preview/timer logic
+4. Implement local API
+5. Implement frontend UI
+6. Implement RL/raw-env helpers
+7. Add tests
+8. Run tests and fix failures
+9. Write README
+10. Provide a concise summary of what was built, current limitations, and future hooks
+
+Deliver working code, not just scaffolding.
+Work in conda env called 'foresight-challenge'.

@@ -1,0 +1,2 @@
+"""Foresight local challenge backend."""
+
