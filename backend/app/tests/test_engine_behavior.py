@@ -99,6 +99,27 @@ def test_timeout_auto_places_latest_valid_preview(engine, clock) -> None:
     assert state.game_status == "completed"
 
 
+def test_non_timeout_episode_does_not_create_timers_after_placement(engine) -> None:
+    state = engine.start_episode(
+        mode="dev",
+        seed=1,
+        queue_length=2,
+        enable_local_timeout=False,
+    )
+
+    assert state.timer_state is None
+
+    action = engine.find_any_valid_action(state)
+
+    assert action is not None
+
+    engine.commit_place_action(state, action)
+
+    assert state.game_status == "in_progress"
+    assert state.current_box is not None
+    assert state.timer_state is None
+
+
 def test_action_repair_recovers_nearby_valid_action(engine) -> None:
     state = make_state(
         current_box=CurrentBox(id="top", dimensions=(0.5, 0.5, 0.5), weight=5.0),

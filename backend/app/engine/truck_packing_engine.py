@@ -63,6 +63,7 @@ class TruckPackingEngine:
         now = self._clock()
         state_metadata = dict(metadata or {})
         state_metadata["auto_terminate_on_no_feasible_placement"] = auto_terminate_on_no_feasible_placement
+        state_metadata["enable_local_timeout"] = enable_local_timeout
         state = GameState(
             game_id=str(uuid4()),
             mode=mode,  # type: ignore[arg-type]
@@ -180,7 +181,10 @@ class TruckPackingEngine:
     def advance_to_next_box(self, state: GameState) -> None:
         if state.remaining_boxes:
             state.current_box = state.remaining_boxes.pop(0)
-            state.timer_state = self._build_timer(self._clock())
+            if state.metadata.get("enable_local_timeout"):
+                state.timer_state = self._build_timer(self._clock())
+            else:
+                state.timer_state = None
         else:
             state.current_box = None
             state.timer_state = None
