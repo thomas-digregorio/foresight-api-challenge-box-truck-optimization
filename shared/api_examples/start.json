@@ -1,6 +1,4 @@
 {
-  "api_key": "local-dev",
-  "mode": "dev",
-  "seed": 42
+  "api_key": "YOUR_API_KEY",
+  "mode": "dev"
 }
-

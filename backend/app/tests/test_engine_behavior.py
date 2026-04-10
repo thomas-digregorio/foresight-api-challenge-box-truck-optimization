@@ -168,26 +168,15 @@ def test_support_projection_prefers_box_tops_over_floor_at_same_xy(engine) -> No
     assert right_support.position == pytest.approx((0.25, 1.4, 0.95))
 
 
-def test_loading_line_rejects_boxes_that_cross_frontier(engine) -> None:
+def test_validation_uses_full_truck_depth_not_former_loading_line(engine) -> None:
     state = make_state(current_box=CurrentBox(id="active", dimensions=(0.5, 0.5, 0.5), weight=5.0))
-    valid = engine.validate_place_action(
+    near_back = engine.validate_place_action(
         state,
         PlacementAction(
             box_id="active",
-            position=(0.52, 1.3, 0.25),
-            orientation_wxyz=(1.0, 0.0, 0.0, 0.0),
-        ),
-    )
-    invalid = engine.validate_place_action(
-        state,
-        PlacementAction(
-            box_id="active",
-            position=(0.56, 1.3, 0.25),
+            position=(1.50, 1.3, 0.25),
             orientation_wxyz=(1.0, 0.0, 0.0, 0.0),
         ),
     )
 
-    assert valid.is_valid is True
-    assert invalid.is_valid is False
-    assert invalid.category == "loading_line_crossed"
-    assert invalid.details["loading_line_x"] == pytest.approx(engine.config.loading_line_x)
+    assert near_back.is_valid is True

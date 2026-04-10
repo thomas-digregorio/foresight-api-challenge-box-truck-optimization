@@ -9,7 +9,6 @@ const FALLBACK_TRUCK = { depth: 2, width: 2.6, height: 2.75 };
 const EMPTY_PLACED_BOXES: BoxPayload[] = [];
 const CAMERA_POSITION = [2.62, 1.3, 1.56] as const;
 const CAMERA_TARGET = [0.7, 1.3, 0.38] as const;
-const LOADING_LINE_X = 0.78;
 
 let woodTextureCache: CanvasTexture | null | undefined;
 
@@ -90,6 +89,7 @@ function ResettableControls() {
 function TruckInterior() {
   const game = useGameStore((state) => state.game);
   const truck = game?.truck ?? FALLBACK_TRUCK;
+  const loadingGuideX = game?.loading_guide_x ?? null;
   const setPosition = useGameStore((state) => state.setPosition);
   const confirmPlacement = useGameStore((state) => state.confirmPlacement);
   const preview = useGameStore((state) => state.preview);
@@ -124,16 +124,18 @@ function TruckInterior() {
         <planeGeometry args={[truck.depth, truck.width]} />
         <primitive object={floorMaterial} attach="material" />
       </mesh>
-      <Line
-        points={[
-          [LOADING_LINE_X, 0.08, 0.012],
-          [LOADING_LINE_X, truck.width - 0.08, 0.012],
-        ]}
-        color="#ffffff"
-        transparent
-        opacity={0.92}
-        lineWidth={2.5}
-      />
+      {loadingGuideX !== null ? (
+        <Line
+          points={[
+            [loadingGuideX, 0.08, 0.012],
+            [loadingGuideX, truck.width - 0.08, 0.012],
+          ]}
+          color="#ffffff"
+          transparent
+          opacity={0.55}
+          lineWidth={2.5}
+        />
+      ) : null}
       <mesh position={[0, truck.width / 2, truck.height / 2]} rotation={[0, Math.PI / 2, 0]} receiveShadow>
         <planeGeometry args={[truck.height, truck.width]} />
         <primitive object={wallMaterial} attach="material" />

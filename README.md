@@ -1,22 +1,54 @@
 # Foresight Local Truck Packing Challenge
 
-Engine-first local truck-packing environment that mirrors the Dexterity Foresight API Challenge closely enough to swap a local client for the remote API later with minimal rewrite.
+This repository is a local approximation of the Dexterity Foresight API Challenge, not the official simulator.
 
-The project is built around the same raw action contract as the challenge:
+Confirmed from Dexterity's public challenge docs on April 9, 2026:
+
+- the challenge is a REST API at `https://dexterity.ai/challenge/api`
+- boxes arrive one at a time and each placement response returns full state
+- documented truck dimensions are `depth=2.0 m`, `width=2.6 m`, `height=2.75 m`
+- public mode names are `dev` and `compete`
+- Dexterity's hosted backend uses a physics simulation in `compete`, and no public simulator is provided
+
+This project preserves the same raw action contract:
 
 - `position: [x, y, z]`
 - `orientation_wxyz: [w, x, y, z]`
 
-The backend accepts arbitrary non-zero quaternions at the API boundary, normalizes them, converts them into oriented box geometry, and then applies deterministic v1 validity rules that only allow gravity-compatible resting poses with effectively horizontal support faces.
+The backend accepts non-zero quaternions at the API boundary, normalizes them, converts them into oriented box geometry, and applies deterministic geometry-only validity checks. That deterministic stability logic is a local approximation, not confirmed official physics behavior.
 
-## What’s Included
+## Fidelity Boundaries
 
-- Deterministic geometry engine with OBB corner generation, truck-bounds checks, SAT-based OBB collision, and 90% support-area validation.
-- In-memory episode registry and timeout logic with `latest_preview_action` / `latest_valid_preview_action` tracking.
-- FastAPI adapter with official-like `/challenge/api/*` routes and local-only `/local/api/preview`.
-- React + Vite + React Three Fiber manual-play UI styled after the provided mockup.
-- RL-ready `RawEpisodeEnv`, `ActionRepairPolicy`, and `ParallelEpisodeManager`.
-- Backend pytest coverage for geometry, support, timeout, repair, API validation, and parallel episode handling.
+### Confirmed from Public Docs
+
+- `POST /challenge/api/start`
+- `POST /challenge/api/place`
+- `GET /challenge/api/status/{game_id}`
+- `POST /challenge/api/stop`
+- `GET /challenge/api/health`
+- truck coordinates are right-handed with origin at the front-bottom-left corner
+- `dev` returns exact placed poses with no physics settling
+- `compete` uses a backend physics simulation and is rate-limited on Dexterity's hosted service
+
+### Local Approximation
+
+- support and stability are deterministic and geometry-only
+- no rigid-body settling, friction, collapse propagation, or post-placement displacement tracking
+- local `compete` uses the confirmed public mode name, but it is still backed by the same deterministic local validator rather than Dexterity's physics backend
+- box ID generation, queue generation, and seeded local starts are local conveniences
+
+### Local-Only Extensions
+
+- `/local/api/start`
+- `/local/api/place`
+- `/local/api/status/{game_id}`
+- `/local/api/stop`
+- `/local/api/preview`
+- manual-play timeout fallback with `current_box_deadline`
+- preview repair suggestions and latest-valid-preview tracking
+- the `loading_guide_x` UI guide line at `0.78 m`
+
+`/challenge/api/*` is intentionally thinner and closer to the public contract. Local-only preview, timeout, and debug behavior now stays under `/local/api/*`.
 
 ## Architecture
 
@@ -29,63 +61,23 @@ The pure engine lives under [backend/app/engine](/home/thomasdigregorio/code/for
 - SAT collision checks
 - floor/support-plane validation
 - box queue progression
-- timeout auto-placement
 - density scoring
 - feasibility probing and nearby action repair
 
 No FastAPI, React, database, or persistence concerns live in the engine layer.
 
-### Raw API Shape Preserved
+### Canonical vs Local Routes
 
-The API adapter keeps the observation and action payloads close to the challenge contract on purpose:
+Canonical challenge-like routes are exposed under `/challenge/api/*` and use public `dev` / `compete` mode names. They do not enforce the old `x = 0.78` loading-line rule, and they avoid returning local timeout/debug fields.
 
-- variable-length `placed_boxes`
-- raw `current_box`
-- `boxes_remaining`
-- `density`
-- `game_status`
-- `termination_reason`
-
-Strict Gymnasium encoding is intentionally deferred. The repo already includes [raw_env.py](/home/thomasdigregorio/code/foresight-api-challenge-box-truck-optimization/backend/app/rl/raw_env.py), but a future fixed-shape wrapper should sit on top of the raw engine observation instead of distorting the canonical state now.
+The manual-play UI uses `/local/api/*` so it can keep local-only features such as preview repair suggestions, timeout fallback, and the local loading guide without polluting the challenge-like contract.
 
 ### Quaternion Semantics
 
-- Orientation is always `[w, x, y, z]`.
-- Quaternions are normalized before use.
-- The engine converts them to rotation matrices and world-space OBB corners.
-- The API and stored placements keep quaternions even though deterministic v1 stability is limited to gravity-compatible resting configurations.
-
-## Timeout Fallback
-
-Each box gets 10 seconds. The frontend continuously sends ghost-box previews to `/local/api/preview`.
-
-The backend stores:
-
-- `current_box_started_at`
-- `current_box_deadline`
-- `latest_preview_action`
-- `latest_valid_preview_action`
-
-When a timeout is detected on a state read or write:
-
-- if `latest_valid_preview_action` exists for the active box, it is auto-committed
-- otherwise the episode ends with `game_status = "timed_out"` and `termination_reason = "timeout_no_valid_preview"`
-
-## Local API
-
-Challenge-like routes:
-
-- `POST /challenge/api/start`
-- `POST /challenge/api/place`
-- `GET /challenge/api/status/{game_id}`
-- `POST /challenge/api/stop`
-- `GET /challenge/api/health`
-
-Local-only route:
-
-- `POST /local/api/preview`
-
-Example payloads live in [shared/api_examples/start.json](/home/thomasdigregorio/code/foresight-api-challenge-box-truck-optimization/shared/api_examples/start.json) and [shared/api_examples/place.json](/home/thomasdigregorio/code/foresight-api-challenge-box-truck-optimization/shared/api_examples/place.json).
+- orientation is always `[w, x, y, z]`
+- quaternions are normalized before use
+- the engine converts them to rotation matrices and world-space OBB corners
+- the API and stored placements keep quaternions even though deterministic v1 stability is limited to gravity-compatible resting configurations
 
 ## Run It
 
@@ -99,6 +91,8 @@ make backend-dev
 ```
 
 Backend URL: `http://127.0.0.1:8000`
+
+Swagger UI: `http://127.0.0.1:8000/challenge/api/docs`
 
 ### Frontend
 
@@ -116,22 +110,23 @@ make test-backend
 make test-frontend
 ```
 
-### Production Frontend Build
+### Example Payloads
 
-```bash
-make build-frontend
-```
+Canonical challenge-like request examples live in [shared/api_examples/start.json](/home/thomasdigregorio/code/foresight-api-challenge-box-truck-optimization/shared/api_examples/start.json) and [shared/api_examples/place.json](/home/thomasdigregorio/code/foresight-api-challenge-box-truck-optimization/shared/api_examples/place.json).
+
+Local-only manual-play start examples live in [shared/api_examples/local_start.json](/home/thomasdigregorio/code/foresight-api-challenge-box-truck-optimization/shared/api_examples/local_start.json).
 
 ## Current Limits
 
-- Stability is deterministic and geometry-only. There is no settling, friction, or rigid-body simulation yet.
-- The feasibility search and RL repair routines are coarse deterministic searches, not optimized packers.
-- Episodes are in-memory only. There is no replay storage, analytics pipeline, or database.
+- Stability is deterministic and geometry-only. There is no local physics settling backend yet.
+- The canonical challenge-like contract is conservative where public docs are incomplete. This repo does not claim undocumented official response fields or semantics.
+- `/challenge/api/my-games` is not implemented locally because the public docs do not expose enough response detail to reproduce it faithfully without guessing.
+- Local timeout fallback is intentionally not treated as official challenge behavior.
 
-## Roadmap
+## Remaining Known Fidelity Gaps
 
-- persistence, replay storage, and optional analytics
-- strict Gymnasium tensor wrapper on top of the raw observation
-- remote Dexterity API client swap-in
-- physics-backed settling/stability backend
-- heuristic, search-based, and RL packing agents
+- Dexterity's hosted `compete` mode performs backend physics settling; this repo does not.
+- Public docs describe `unstable` termination for 3+ displaced boxes, but that requires physics/displacement tracking the local engine does not have.
+- Some official response details remain unverified because no live API credentials or captured live responses were used in this audit.
+
+See [docs/fidelity_audit.md](/home/thomasdigregorio/code/foresight-api-challenge-box-truck-optimization/docs/fidelity_audit.md) for the audit summary, fixes made, and remaining approximation gaps.

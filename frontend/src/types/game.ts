@@ -25,11 +25,12 @@ export type GameState = {
   density: number;
   game_status: "in_progress" | "completed" | "timed_out" | "no_feasible_placement";
   termination_reason: string | null;
-  mode: "dev" | "compete_stub";
+  mode: "dev" | "compete";
   created_at: string;
   current_box_started_at: string | null;
   current_box_deadline: string | null;
   timeout_seconds: number;
+  loading_guide_x: number | null;
 };
 
 export type PreviewResponse = {
