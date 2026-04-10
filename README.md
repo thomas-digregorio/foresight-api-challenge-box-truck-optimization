@@ -116,6 +116,24 @@ Canonical challenge-like request examples live in [shared/api_examples/start.jso
 
 Local-only manual-play start examples live in [shared/api_examples/local_start.json](/home/thomasdigregorio/code/foresight-api-challenge-box-truck-optimization/shared/api_examples/local_start.json).
 
+## Greedy Extreme-Point Agent
+
+The repo now includes a first serious heuristic baseline in [backend/app/agents/extreme_point](/home/thomasdigregorio/code/foresight-api-challenge-box-truck-optimization/backend/app/agents/extreme_point). It is a geometry-first online search agent, not a learned policy.
+
+- v1 searches only the 6 orthogonal box orientations and still emits quaternions in `[w, x, y, z]`
+- candidate generation comes from floor and stable top support planes plus deterministic extreme-point anchors, not a brute-force XY grid
+- every candidate is validated through the existing exact engine before scoring
+- scoring strongly prioritizes minimizing front-to-back depth growth and flush-gap penalties, then rewards support quality and wall/neighbor contact
+- per-move candidate groups can be evaluated in parallel, and batch local benchmarks can run multiple episodes concurrently
+
+Example commands:
+
+```bash
+conda run -n foresight-challenge python scripts/run_extreme_point_local.py --episodes 5 --parallel --max-workers 4
+conda run -n foresight-challenge python scripts/benchmark_extreme_point_parallel.py --episodes 20 --workers 4 --agent-max-workers 4
+conda run -n foresight-challenge python scripts/run_extreme_point_http.py --base-url http://127.0.0.1:8000 --api-key local-dev
+```
+
 ## Current Limits
 
 - Stability is deterministic and geometry-only. There is no local physics settling backend yet.
