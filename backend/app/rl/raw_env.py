@@ -9,7 +9,7 @@ from app.models.entities import PlacementAction
 from app.rl.action_repair import ActionRepairPolicy
 from app.services.episode_registry import EpisodeRegistry
 from app.services.episode_service import EpisodeService
-from app.api.serializers import serialize_state
+from app.api.serializers import serialize_local_state
 
 
 class RawEpisodeEnv:
@@ -33,15 +33,22 @@ class RawEpisodeEnv:
         self.game_id: str | None = None
 
     def reset(self, seed: int | None = None) -> dict[str, Any]:
-        state = self.service.start_episode(mode=self.mode, seed=seed)
+        state = self.service.start_episode(
+            mode=self.mode,
+            seed=seed,
+            api_key="local-rl",
+            api_variant="local",
+            enable_local_timeout=True,
+            auto_terminate_on_no_feasible_placement=True,
+        )
         self.game_id = state.game_id
-        return serialize_state(state)
+        return serialize_local_state(state, self.engine.config)
 
     def step(self, action: dict[str, Any] | np.ndarray) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
         if self.game_id is None:
             obs = self.reset()
             return obs, 0.0, False, False, {"auto_reset": True}
-        state = self.service.get_state(self.game_id)
+        state = self.service.get_state(self.game_id, expected_api_variant="local")
         if isinstance(action, np.ndarray):
             payload = action.tolist()
             if len(payload) != 7:
@@ -65,12 +72,12 @@ class RawEpisodeEnv:
             state.termination_reason = "repair_failed"
             state.timer_state = None
             self.registry.update(state)
-            obs = serialize_state(state)
+            obs = serialize_local_state(state, self.engine.config)
             return obs, 0.0, False, True, {"repair_failed": True}
 
-        self.service.place_box(self.game_id, repaired, source="rl_repair")
-        next_state = self.service.get_state(self.game_id)
-        obs = serialize_state(next_state)
+        self.service.place_box(self.game_id, repaired, source="rl_repair", expected_api_variant="local")
+        next_state = self.service.get_state(self.game_id, expected_api_variant="local")
+        obs = serialize_local_state(next_state, self.engine.config)
         terminated = next_state.game_status == "completed"
         truncated = next_state.game_status == "timed_out"
         reward = next_state.density if terminated else 0.0

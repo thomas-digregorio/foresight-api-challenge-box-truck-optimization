@@ -54,10 +54,15 @@ class TruckPackingEngine:
         mode: str,
         seed: int | None,
         queue_length: int | None = None,
+        enable_local_timeout: bool = False,
+        auto_terminate_on_no_feasible_placement: bool = False,
+        metadata: dict[str, Any] | None = None,
     ) -> GameState:
         boxes = self._generate_box_queue(seed=seed, queue_length=queue_length)
         current_box = boxes.pop(0) if boxes else None
         now = self._clock()
+        state_metadata = dict(metadata or {})
+        state_metadata["auto_terminate_on_no_feasible_placement"] = auto_terminate_on_no_feasible_placement
         state = GameState(
             game_id=str(uuid4()),
             mode=mode,  # type: ignore[arg-type]
@@ -68,14 +73,14 @@ class TruckPackingEngine:
             density=0.0,
             game_status="in_progress",
             created_at=now,
-            timer_state=self._build_timer(now) if current_box is not None else None,
+            timer_state=self._build_timer(now) if enable_local_timeout and current_box is not None else None,
             latest_preview_action=None,
             latest_valid_preview_action=None,
             termination_reason=None,
             seed=seed,
-            metadata={},
+            metadata=state_metadata,
         )
-        if state.current_box is not None and not self.has_feasible_placement(state):
+        if auto_terminate_on_no_feasible_placement and state.current_box is not None and not self.has_feasible_placement(state):
             state.game_status = "no_feasible_placement"
             state.termination_reason = "no_feasible_placement"
             state.timer_state = None
@@ -166,7 +171,7 @@ class TruckPackingEngine:
             state.termination_reason = None
             state.timer_state = None
             return state
-        if not self.has_feasible_placement(state):
+        if state.metadata.get("auto_terminate_on_no_feasible_placement") and not self.has_feasible_placement(state):
             state.game_status = "no_feasible_placement"
             state.termination_reason = "no_feasible_placement"
             state.timer_state = None
@@ -217,10 +222,7 @@ class TruckPackingEngine:
                 continue
             min_x, min_y, max_x, max_y = reference.footprint_polygon.bounds
             x_min = -min_x + self.config.geometry_epsilon
-            x_max = min(
-                state.truck.depth - max_x - self.config.geometry_epsilon,
-                self.config.loading_line_x - max_x - self.config.geometry_epsilon,
-            )
+            x_max = state.truck.depth - max_x - self.config.geometry_epsilon
             y_min = -min_y + self.config.geometry_epsilon
             y_max = state.truck.width - max_y - self.config.geometry_epsilon
             if x_min > x_max or y_min > y_max:
@@ -365,7 +367,7 @@ class TruckPackingEngine:
             )
         if action.box_id != current_box.id:
             raise ValidationError(
-                "The action box_id does not match the current box.",
+                f"Expected box_id '{current_box.id}', got '{action.box_id}'",
                 category="invalid_box_id",
                 details={"expected_box_id": current_box.id, "received_box_id": action.box_id},
             )
@@ -396,18 +398,6 @@ class TruckPackingEngine:
                 message="Placement would leave the truck bounds.",
                 category="out_of_bounds",
                 details=bounds_details,
-                normalized_action=normalized_action,
-            )
-
-        if geometry.aabb_max[0] > self.config.loading_line_x + self.config.geometry_epsilon:
-            return ValidationResult(
-                is_valid=False,
-                message="Placement crosses the fixed loading line.",
-                category="loading_line_crossed",
-                details={
-                    "loading_line_x": self.config.loading_line_x,
-                    "candidate_max_x": float(geometry.aabb_max[0]),
-                },
                 normalized_action=normalized_action,
             )
 

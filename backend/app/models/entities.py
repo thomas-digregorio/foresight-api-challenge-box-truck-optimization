@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
-Mode = Literal["dev", "compete_stub"]
+Mode = Literal["dev", "compete"]
 GameStatus = Literal["in_progress", "completed", "timed_out", "no_feasible_placement"]
 
 
@@ -76,7 +76,7 @@ class TerminationInfo:
 @dataclass(slots=True)
 class EngineConfig:
     truck: Truck = field(default_factory=Truck)
-    loading_line_x: float = 0.78
+    local_loading_guide_x: float = 0.78
     default_queue_length: int = 120
     dimension_ranges: tuple[tuple[float, float], tuple[float, float], tuple[float, float]] = (
         (0.26, 0.75),

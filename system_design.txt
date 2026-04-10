@@ -1,3 +1,13 @@
+Historical build brief.
+
+Current fidelity notes override older assumptions in this file where they conflict:
+- canonical public mode names are `dev` and `compete`
+- `/challenge/api/*` is kept challenge-like and does not expose local timeout/debug helpers
+- manual timeout fallback and preview helpers are local-only behavior under `/local/api/*`
+- the `0.78 m` line is a local UI guide, not canonical truck validation
+
+See `README.md` and `docs/fidelity_audit.md` for the current fidelity contract.
+
 You are a senior simulation + full-stack engineer. Build a local truck-packing game/environment that mirrors the Dexterity Foresight API Challenge closely enough that I can later swap my local client for the real remote API with minimal rewrite.
 
 This is an ENGINE-FIRST project. The core engine must be deterministic and geometry-only. No real physics/settling yet, but leave clean extension points for future physics-based stability/settling.
@@ -313,7 +323,7 @@ Under `/challenge/api`, implement:
 Request:
 {
   "api_key": "string",
-  "mode": "dev" | "compete_stub",
+  "mode": "dev" | "compete",
   "seed": optional int
 }
 
@@ -327,7 +337,7 @@ Response:
     "weight": number
   },
   "boxes_remaining": int,
-  "mode": "dev" | "compete_stub"
+  "mode": "dev" | "compete"
 }
 
 2. `POST /challenge/api/place`

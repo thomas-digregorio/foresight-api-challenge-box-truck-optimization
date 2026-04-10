@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.core.exceptions import NotFoundError
 from app.engine.truck_packing_engine import TruckPackingEngine
 from app.models.entities import PlacementAction, PreviewAction, ValidationResult
 from app.services.episode_registry import EpisodeRegistry
@@ -14,8 +15,16 @@ class PreviewService:
         self,
         game_id: str,
         action: PreviewAction,
+        *,
+        expected_api_variant: str,
     ) -> tuple[ValidationResult, PlacementAction | None, PlacementAction | None, PlacementAction | None]:
         state = self.registry.get(game_id)
+        if state.metadata.get("api_variant") != expected_api_variant:
+            raise NotFoundError(
+                f"Unknown game_id: {game_id}",
+                category="invalid_game_id",
+                details={"game_id": game_id},
+            )
         validation = self.engine.update_preview(state, action)
         current_box = state.current_box
         support_aligned = None

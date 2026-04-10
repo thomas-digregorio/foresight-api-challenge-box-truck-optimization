@@ -18,7 +18,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function startGame(seed?: number): Promise<{ game_id: string }> {
-  return request("/challenge/api/start", {
+  return request("/local/api/start", {
     method: "POST",
     body: JSON.stringify({
       api_key: "local-dev",
@@ -29,7 +29,7 @@ export async function startGame(seed?: number): Promise<{ game_id: string }> {
 }
 
 export async function fetchStatus(gameId: string): Promise<GameState> {
-  return request(`/challenge/api/status/${gameId}`);
+  return request(`/local/api/status/${gameId}`);
 }
 
 export async function previewPlacement(gameId: string, boxId: string, pose: Pose): Promise<PreviewResponse> {
@@ -45,7 +45,7 @@ export async function previewPlacement(gameId: string, boxId: string, pose: Pose
 }
 
 export async function placeBox(gameId: string, boxId: string, pose: Pose): Promise<GameState> {
-  return request("/challenge/api/place", {
+  return request("/local/api/place", {
     method: "POST",
     body: JSON.stringify({
       game_id: gameId,
@@ -57,7 +57,7 @@ export async function placeBox(gameId: string, boxId: string, pose: Pose): Promi
 }
 
 export async function stopGame(gameId: string): Promise<GameState> {
-  return request("/challenge/api/stop", {
+  return request("/local/api/stop", {
     method: "POST",
     body: JSON.stringify({
       game_id: gameId,
@@ -65,4 +65,3 @@ export async function stopGame(gameId: string): Promise<GameState> {
     }),
   });
 }
-
