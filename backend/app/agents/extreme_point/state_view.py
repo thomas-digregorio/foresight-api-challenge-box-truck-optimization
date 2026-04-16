@@ -46,11 +46,13 @@ class DecisionStateView:
     game_state: GameState
     current_box: CurrentBox | None
     placed_boxes: tuple[PlacedBoxView, ...]
+    placed_volume: float
     current_max_x: float
     obstacle_rectangles: tuple[RectBounds, ...]
     boxes_remaining: int
     _overlap_rectangles_cache: dict[tuple[float, float], tuple[RectBounds, ...]] = field(default_factory=dict)
     _support_surface_rectangles_cache: dict[float, tuple[RectBounds, ...]] = field(default_factory=dict)
+    _resting_rectangles_cache: dict[float, tuple[RectBounds, ...]] = field(default_factory=dict)
     _free_rectangle_cache: dict[tuple[str, float, float], tuple[RectBounds, ...]] = field(default_factory=dict)
 
     @classmethod
@@ -125,6 +127,7 @@ class DecisionStateView:
         )
         obstacle_rectangles = tuple(box.footprint_bounds for box in placed_views)
         current_max_x = max((box.max_x for box in placed_views), default=0.0)
+        placed_volume = sum(box.volume for box in placed_boxes)
         return cls(
             raw_state=raw_state,
             config=config,
@@ -132,6 +135,7 @@ class DecisionStateView:
             game_state=game_state,
             current_box=current_box,
             placed_boxes=tuple(placed_views),
+            placed_volume=float(placed_volume),
             current_max_x=float(current_max_x),
             obstacle_rectangles=obstacle_rectangles,
             boxes_remaining=int(raw_state.get("boxes_remaining", 0)),
@@ -163,6 +167,19 @@ class DecisionStateView:
         )
         self._support_surface_rectangles_cache[key] = surfaces
         return surfaces
+
+    def resting_rectangles_on_plane(self, z_support: float) -> tuple[RectBounds, ...]:
+        key = round(z_support, 6)
+        cached = self._resting_rectangles_cache.get(key)
+        if cached is not None:
+            return cached
+        rectangles = tuple(
+            box.footprint_bounds
+            for box in self.placed_boxes
+            if abs(box.bottom_z - z_support) <= self.config.support_plane_epsilon
+        )
+        self._resting_rectangles_cache[key] = rectangles
+        return rectangles
 
     def free_rectangles(
         self,

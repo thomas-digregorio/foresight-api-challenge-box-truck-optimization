@@ -88,6 +88,7 @@ function ResettableControls() {
 
 function TruckInterior() {
   const game = useGameStore((state) => state.game);
+  const isSpectating = useGameStore((state) => state.isSpectating);
   const truck = game?.truck ?? FALLBACK_TRUCK;
   const loadingGuideX = game?.loading_guide_x ?? null;
   const setPosition = useGameStore((state) => state.setPosition);
@@ -103,14 +104,14 @@ function TruckInterior() {
   const wallMaterial = new MeshStandardMaterial({ color: "#f2eee8", roughness: 0.92, metalness: 0.02 });
 
   const onPointerMove = (event: ThreeEvent<PointerEvent>) => {
-    if (!game?.current_box || game.game_status !== "in_progress") {
+    if (isSpectating || !game?.current_box || game.game_status !== "in_progress") {
       return;
     }
     setPosition({ x: event.point.x, y: event.point.y });
   };
 
   const onDoubleClick = async () => {
-    if (preview?.is_valid) {
+    if (!isSpectating && preview?.is_valid) {
       await confirmPlacement();
     }
   };
@@ -199,10 +200,11 @@ function PlacedBoxes() {
 
 function PreviewBox() {
   const game = useGameStore((state) => state.game);
+  const isSpectating = useGameStore((state) => state.isSpectating);
   const pose = useGameStore((state) => state.pose);
   const preview = useGameStore((state) => state.preview);
 
-  if (!game?.current_box || game.game_status !== "in_progress") {
+  if (isSpectating || !game?.current_box || game.game_status !== "in_progress") {
     return null;
   }
   const quaternion = new Quaternion(pose.orientationWxyz[1], pose.orientationWxyz[2], pose.orientationWxyz[3], pose.orientationWxyz[0]);

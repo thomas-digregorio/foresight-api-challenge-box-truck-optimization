@@ -7,12 +7,12 @@ from app.agents.extreme_point.state_view import DecisionStateView
 from app.agents.extreme_point.types import OrientationOption, SupportPlane
 
 ANCHOR_STYLES: tuple[str, ...] = (
-    "min_x_min_y",
-    "min_x_max_y",
     "max_x_min_y",
     "max_x_max_y",
-    "min_x_center_y",
+    "min_x_min_y",
+    "min_x_max_y",
     "max_x_center_y",
+    "min_x_center_y",
     "center_x_min_y",
     "center_x_max_y",
     "center_x_center_y",

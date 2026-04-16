@@ -36,6 +36,8 @@ export function GameHUD() {
   const preview = useGameStore((state) => state.preview);
   const pose = useGameStore((state) => state.pose);
   const mode = useGameStore((state) => state.mode);
+  const isSpectating = useGameStore((state) => state.isSpectating);
+  const spectatorGameId = useGameStore((state) => state.spectatorGameId);
   const error = useGameStore((state) => state.error);
   const showAdvanced = useGameStore((state) => state.showAdvanced);
   const isStarting = useGameStore((state) => state.isStarting);
@@ -44,6 +46,7 @@ export function GameHUD() {
   const poseVersion = useGameStore((state) => state.poseVersion);
   const previewPoseVersion = useGameStore((state) => state.previewPoseVersion);
   const startNewGame = useGameStore((state) => state.startNewGame);
+  const attachToGame = useGameStore((state) => state.attachToGame);
   const confirmPlacement = useGameStore((state) => state.confirmPlacement);
   const stopCurrentGame = useGameStore((state) => state.stopCurrentGame);
   const setPosition = useGameStore((state) => state.setPosition);
@@ -54,6 +57,7 @@ export function GameHUD() {
   const resetCamera = useGameStore((state) => state.resetCamera);
   const zoomCamera = useGameStore((state) => state.zoomCamera);
   const [nowMs, setNowMs] = useState(Date.now());
+  const [spectatorInput, setSpectatorInput] = useState("");
 
   useEffect(() => {
     const intervalId = window.setInterval(() => setNowMs(Date.now()), 100);
@@ -65,7 +69,7 @@ export function GameHUD() {
   const remainingSeconds = deadline ? Math.max(0, (deadline - nowMs) / 1000) : 0;
   const percentage = game ? Math.max(0, Math.min(100, game.density * 100)) : 0;
   const previewIsFresh = previewPoseVersion === poseVersion;
-  const canConfirmPlacement = Boolean(preview?.is_valid) && previewIsFresh && !isPreviewSyncing && mode === "playing" && !isPlacing;
+  const canConfirmPlacement = !isSpectating && Boolean(preview?.is_valid) && previewIsFresh && !isPreviewSyncing && mode === "playing" && !isPlacing;
   const previewTone = isPreviewSyncing
     ? "bg-slate-100/10 text-white/80"
     : canConfirmPlacement
@@ -73,7 +77,9 @@ export function GameHUD() {
       : preview
         ? "bg-rose-400/14 text-rose-100"
         : "bg-slate-100/10 text-white/80";
-  const previewMessage = isPreviewSyncing
+  const previewMessage = isSpectating
+    ? "Watching live engine state for an existing game."
+    : isPreviewSyncing
     ? "Syncing preview with the engine..."
     : preview?.message ?? "Preview a pose to start the timeout fallback buffer.";
 
@@ -94,6 +100,11 @@ export function GameHUD() {
             <span>Queue remaining</span>
             <span>{game?.boxes_remaining ?? 0}</span>
           </div>
+          {isSpectating && spectatorGameId ? (
+            <div className="mt-3 rounded-2xl bg-white/6 px-4 py-3 text-xs tracking-[0.16em] text-white/70">
+              Spectating {spectatorGameId}
+            </div>
+          ) : null}
         </div>
 
         <div className="pointer-events-auto absolute right-5 top-5 w-[21rem] rounded-[1.9rem] p-5 text-white shadow-panel panel-glass">
@@ -102,7 +113,7 @@ export function GameHUD() {
               <div className="text-xs uppercase tracking-[0.3em] text-white/55">Next</div>
               <h2 className="mt-2 text-2xl font-semibold">Current Box</h2>
             </div>
-            <StatPill label="Timer" value={`${remainingSeconds.toFixed(1)}s`} />
+            <StatPill label={isSpectating ? "Mode" : "Timer"} value={isSpectating ? "Spectator" : `${remainingSeconds.toFixed(1)}s`} />
           </div>
           <div className="mt-4">
             <Suspense fallback={<PreviewFallback />}>
@@ -117,15 +128,17 @@ export function GameHUD() {
             </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
-            <button
-              className="rounded-full bg-amber-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-amber-400/40"
-              disabled={!canConfirmPlacement}
-              onClick={() => void confirmPlacement()}
-            >
-              {isPlacing ? "Placing..." : isPreviewSyncing ? "Syncing..." : "Confirm Placement"}
-            </button>
+            {!isSpectating ? (
+              <button
+                className="rounded-full bg-amber-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-amber-400/40"
+                disabled={!canConfirmPlacement}
+                onClick={() => void confirmPlacement()}
+              >
+                {isPlacing ? "Placing..." : isPreviewSyncing ? "Syncing..." : "Confirm Placement"}
+              </button>
+            ) : null}
             <button className="rounded-full border border-white/15 px-4 py-2 text-sm text-white/75" onClick={() => void stopCurrentGame()}>
-              Stop
+              {isSpectating ? "Leave Spectator" : "Stop"}
             </button>
             <button className="rounded-full border border-white/15 px-4 py-2 text-sm text-white/75" onClick={() => zoomCamera("out")}>
               Zoom Out (I)
@@ -143,9 +156,9 @@ export function GameHUD() {
         <div className="pointer-events-auto absolute bottom-6 left-1/2 w-[min(70rem,calc(100%-2rem))] -translate-x-1/2 rounded-[2rem] px-6 py-5 text-white shadow-panel panel-glass">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex flex-wrap gap-2">
-              <StatPill label="Move" value="W/A/S/D" />
-              <StatPill label="Rotate" value="1 / 2 / 3 / 4 / 5 / 6" />
-              <StatPill label="Drop" value="Space" />
+              {isSpectating ? <StatPill label="Watch" value="Live Polling" /> : <StatPill label="Move" value="W/A/S/D" />}
+              {isSpectating ? <StatPill label="Game" value={spectatorGameId ?? "--"} /> : <StatPill label="Rotate" value="1 / 2 / 3 / 4 / 5 / 6" />}
+              {isSpectating ? <StatPill label="State" value={game?.game_status ?? "--"} /> : <StatPill label="Drop" value="Space" />}
               <StatPill label="Zoom" value="I / O" />
               <StatPill label="View" value="R Reset" />
             </div>
@@ -154,14 +167,18 @@ export function GameHUD() {
             </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
-            <button className="rounded-full border border-white/15 px-4 py-2 text-sm" onClick={toggleAdvanced}>
-              {showAdvanced ? "Hide Advanced" : "Advanced"}
-            </button>
-            {ORIENTATION_PRESETS.map((preset, index) => (
-              <button key={preset.id} className="rounded-full border border-white/10 px-3 py-2 text-sm text-white/75" onClick={() => applyPreset(preset.id)}>
-                {presetHotkeyLabel(index)} {preset.label}
+            {!isSpectating ? (
+              <button className="rounded-full border border-white/15 px-4 py-2 text-sm" onClick={toggleAdvanced}>
+                {showAdvanced ? "Hide Advanced" : "Advanced"}
               </button>
-            ))}
+            ) : null}
+            {!isSpectating
+              ? ORIENTATION_PRESETS.map((preset, index) => (
+                  <button key={preset.id} className="rounded-full border border-white/10 px-3 py-2 text-sm text-white/75" onClick={() => applyPreset(preset.id)}>
+                    {presetHotkeyLabel(index)} {preset.label}
+                  </button>
+                ))
+              : null}
           </div>
         </div>
       </div>
@@ -183,19 +200,37 @@ export function GameHUD() {
                 <StatPill label="End State" value={game.game_status} />
               </div>
             ) : null}
-            <div className="mt-8 flex justify-center">
+            <div className="mt-8 grid gap-4 md:grid-cols-[auto,1fr] md:items-end">
               <button
                 className="rounded-full bg-amber-400 px-10 py-5 text-lg font-semibold text-slate-950 shadow-[0_24px_60px_rgba(184,118,20,0.35)] transition hover:-translate-y-0.5 hover:bg-amber-300"
                 onClick={() => void startNewGame()}
               >
-                {isStarting ? "Starting..." : "Start New Game"}
+                {isStarting && !isSpectating ? "Starting..." : "Start New Game"}
               </button>
+              <div className="rounded-[1.5rem] border border-white/10 bg-white/6 p-4">
+                <div className="text-xs uppercase tracking-[0.28em] text-white/55">Spectate Existing Game</div>
+                <div className="mt-3 flex flex-col gap-3 sm:flex-row">
+                  <input
+                    className="min-w-0 flex-1 rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none placeholder:text-white/35"
+                    type="text"
+                    placeholder="Paste local game_id"
+                    value={spectatorInput}
+                    onChange={(event) => setSpectatorInput(event.target.value)}
+                  />
+                  <button
+                    className="rounded-full border border-white/15 px-5 py-3 text-sm font-medium text-white/85"
+                    onClick={() => void attachToGame(spectatorInput)}
+                  >
+                    {isStarting ? "Working..." : "Attach"}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
       ) : null}
 
-      {showAdvanced ? (
+      {showAdvanced && !isSpectating ? (
         <div className="pointer-events-auto absolute bottom-40 left-6 w-[26rem] rounded-[1.9rem] p-5 text-white shadow-panel panel-glass">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold">Advanced Pose</h3>

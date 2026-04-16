@@ -7,6 +7,33 @@ from app.agents.extreme_point.state_view import DecisionStateView
 from app.agents.extreme_point.types import SupportPlane
 
 
+def _component_can_host_current_box(
+    view: DecisionStateView,
+    *,
+    component_bounds: tuple[float, float, float, float],
+) -> bool:
+    if view.current_box is None:
+        return True
+    component_depth = component_bounds[2] - component_bounds[0]
+    component_width = component_bounds[3] - component_bounds[1]
+    dimensions = tuple(float(value) for value in view.current_box.dimensions)
+    footprint_pairs = (
+        (dimensions[0], dimensions[1]),
+        (dimensions[0], dimensions[2]),
+        (dimensions[1], dimensions[2]),
+    )
+    epsilon = view.config.geometry_epsilon
+    return any(
+        (
+            component_depth + epsilon >= first and component_width + epsilon >= second
+        )
+        or (
+            component_depth + epsilon >= second and component_width + epsilon >= first
+        )
+        for first, second in footprint_pairs
+    )
+
+
 def _plane_metrics(
     view: DecisionStateView,
     *,
@@ -29,10 +56,22 @@ def _plane_metrics(
     max_component_area = max(component_areas, default=0.0)
     plane_front_x = max((rectangle[2] for rectangle in support_rectangles), default=0.0)
     frontier_gap = max(0.0, view.current_max_x - plane_front_x)
+    fit_component_area = 0.0
+    fit_component_count = 0
+    for component in components:
+        component_bounds = tuple(float(value) for value in component.bounds)
+        if not _component_can_host_current_box(view, component_bounds=component_bounds):
+            continue
+        fit_component_area += float(component.area)
+        fit_component_count += 1
+    unusable_area = max(0.0, support_area - fit_component_area)
     quality_score = (
         1.25 * max_component_area
         + 0.35 * support_area
+        + 0.45 * fit_component_area
+        + 0.15 * fit_component_count
         - 0.5 * frontier_gap
+        - 0.35 * unusable_area
         - 0.2 * max(0, len(components) - 1)
         - 0.05 * z_support
     )

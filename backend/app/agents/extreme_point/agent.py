@@ -8,7 +8,7 @@ from typing import Any
 from app.engine.truck_packing_engine import TruckPackingEngine
 from app.models.entities import PlacementAction, Truck
 
-from app.agents.extreme_point.candidate_generation import generate_candidate_groups_limited
+from app.agents.extreme_point.candidate_generation import _support_anchor_components, generate_candidate_groups_limited
 from app.agents.extreme_point.evaluator import evaluate_candidate_groups
 from app.agents.extreme_point.orientations import (
     build_orientation_option_for_quaternion,
@@ -18,7 +18,7 @@ from app.agents.extreme_point.orientations import (
 from app.agents.extreme_point.scoring import compute_score_breakdown
 from app.agents.extreme_point.state_view import DecisionStateView
 from app.agents.extreme_point.support_planes import extract_support_planes
-from app.agents.extreme_point.types import CandidatePlacement, EvaluationSummary, ProxyCandidate, RankedCandidate, ScoreWeights, SupportPlane
+from app.agents.extreme_point.types import CandidatePlacement, EvaluationSummary, HeuristicProfile, ProxyCandidate, RankedCandidate, ScoreWeights, SupportPlane
 
 
 class GreedyExtremePointAgent:
@@ -30,6 +30,7 @@ class GreedyExtremePointAgent:
         parallel: bool = True,
         parallel_candidate_threshold: int = 64,
         fallback_to_engine: bool = True,
+        heuristic_profile: HeuristicProfile = "baseline",
         score_weights: ScoreWeights | None = None,
         max_candidates_per_group: int | None = 12,
         frontier_band_delta_x: float | None = 0.15,
@@ -38,14 +39,15 @@ class GreedyExtremePointAgent:
         decision_time_budget_seconds: float = 8.0,
         incumbent_return_margin_seconds: float = 1.25,
         fallback_buffer_seconds: float = 2.0,
-        max_generated_candidates_per_move: int = 15000,
-        max_validated_candidates_per_move: int = 600,
+        max_generated_candidates_per_move: int = 12000,
+        max_validated_candidates_per_move: int = 320,
     ) -> None:
         self.engine = engine or TruckPackingEngine()
         self.max_workers = max_workers
         self.parallel = parallel
         self.parallel_candidate_threshold = parallel_candidate_threshold
         self.fallback_to_engine = fallback_to_engine
+        self.heuristic_profile = heuristic_profile
         self.score_weights = score_weights or ScoreWeights()
         self.max_candidates_per_group = max_candidates_per_group
         self.frontier_band_delta_x = frontier_band_delta_x
@@ -64,6 +66,8 @@ class GreedyExtremePointAgent:
             width=self.engine.config.truck.width,
             height=self.engine.config.truck.height,
         )
+        self._preferred_support_plane_id: str | None = None
+        self._preferred_support_component_bounds: tuple[float, float, float, float] | None = None
 
     def select_action(self, raw_state: dict[str, Any]) -> dict[str, Any] | None:
         if raw_state.get("truck") is not None:
@@ -82,6 +86,7 @@ class GreedyExtremePointAgent:
             self._last_choice = {
                 "chosen_action": None,
                 "fallback_used": False,
+                "proactive_stop": False,
                 "reason": "No current box is available.",
                 "candidates_generated": 0,
                 "candidates_validated": 0,
@@ -105,7 +110,8 @@ class GreedyExtremePointAgent:
             vertical_axis_cos_tolerance=self.engine.config.vertical_axis_cos_tolerance,
         )
         support_plane_started = perf_counter()
-        support_plane_batches = self._support_plane_batches(extract_support_planes(view))
+        support_planes = extract_support_planes(view)
+        support_plane_batches = self._support_plane_batches(support_planes)
         support_plane_extraction_ms = (perf_counter() - support_plane_started) * 1000.0
         incumbent: RankedCandidate | None = None
         seen_dedup_keys: set[tuple[float, ...]] = set()
@@ -154,6 +160,8 @@ class GreedyExtremePointAgent:
                 view,
                 support_plane_batch,
                 orientations,
+                heuristic_profile=self.heuristic_profile,
+                allow_secondary_widening=hard_state_mode,
                 start_group_index=next_group_index,
                 seen_dedup_keys=seen_dedup_keys,
                 max_generated_candidates=generated_budget_remaining,
@@ -172,6 +180,8 @@ class GreedyExtremePointAgent:
                 groups,
                 engine=self.engine,
                 weights=self.score_weights,
+                preferred_support_plane_id=self._preferred_support_plane_id,
+                preferred_support_component_bounds=self._preferred_support_component_bounds,
                 parallel=self.parallel,
                 max_workers=self._resolved_max_workers,
                 parallel_candidate_threshold=self.parallel_candidate_threshold,
@@ -253,6 +263,37 @@ class GreedyExtremePointAgent:
             summary.best_proxy_candidate = summary.top_proxy_candidates[0].candidate
             summary.best_proxy_score = summary.top_proxy_candidates[0].score
         if incumbent is not None:
+            if self._should_proactively_stop(view, incumbent):
+                score = incumbent.score
+                self._last_choice = {
+                    "chosen_action": None,
+                    **self._score_details(score),
+                    "support_ratio": incumbent.support_ratio,
+                    "fallback_used": False,
+                    "proactive_stop": True,
+                    "parallel_used": summary.parallel_used,
+                    "candidates_generated": summary.generated_count,
+                    "candidates_validated": summary.validated_count,
+                    "candidates_pruned": summary.pruned_count,
+                    "candidates_skipped_by_bound": summary.skipped_by_bound_count,
+                    "deadline_hit": summary.deadline_hit,
+                    "validation_budget_hit": summary.validation_budget_hit,
+                    "valid_candidates": summary.valid_count,
+                    "group_count": summary.group_count,
+                    "support_plane_extraction_ms": support_plane_extraction_ms,
+                    "candidate_generation_ms": candidate_generation_ms,
+                    "evaluation_preparation_ms": summary.preparation_time_ms,
+                    "evaluation_validation_ms": summary.validation_time_ms,
+                    "fallback_ms": 0.0,
+                    "decision_time_ms": (perf_counter() - started_at) * 1000.0,
+                    "invalid_reason_counts": dict(summary.invalid_reason_counts),
+                    "valid_counts_by_group": dict(summary.valid_counts_by_group),
+                    "anchor_style": incumbent.candidate.anchor_style,
+                    "support_plane_id": incumbent.candidate.support_plane_id,
+                    "orientation_index": incumbent.candidate.orientation_index,
+                    "reason": "Proactive stop: current density is high and the best available move scores as a likely regression or instability risk.",
+                }
+                return None
             self._remember_choice(
                 incumbent,
                 summary=summary,
@@ -272,6 +313,7 @@ class GreedyExtremePointAgent:
             self._last_choice = {
                 "chosen_action": None,
                 "fallback_used": False,
+                "proactive_stop": False,
                 "reason": "No valid extreme-point candidate found.",
                 "candidates_generated": summary.generated_count,
                 "candidates_validated": summary.validated_count,
@@ -293,6 +335,7 @@ class GreedyExtremePointAgent:
         fallback_started = perf_counter()
         fallback_ranked = self._select_budgeted_fallback(
             view,
+            support_planes=support_planes,
             top_proxy_candidates=top_proxy_candidates,
             deadline_monotonic=deadline_monotonic,
         )
@@ -303,6 +346,7 @@ class GreedyExtremePointAgent:
             self._last_choice = {
                 "chosen_action": None,
                 "fallback_used": False,
+                "proactive_stop": False,
                 "reason": (
                     "No exact incumbent found before the move deadline expired."
                     if deadline_expired
@@ -361,7 +405,7 @@ class GreedyExtremePointAgent:
     def _support_plane_batches(self, support_planes: list[SupportPlane]) -> list[list[SupportPlane]]:
         if not support_planes:
             return []
-        phase_limits = sorted({1, 2, 4, 8, len(support_planes)})
+        phase_limits = sorted({1, 2, 3, 5, 8, len(support_planes)})
         batches: list[list[SupportPlane]] = []
         previous_limit = 0
         for limit in phase_limits:
@@ -382,7 +426,7 @@ class GreedyExtremePointAgent:
         if base_max_candidates is None or base_frontier_band is None:
             return base_max_candidates, base_frontier_band
         if hard_state_mode and remaining_seconds > max(2.5, self.fallback_buffer_seconds + 0.5):
-            return max(base_max_candidates, 20), max(base_frontier_band, 0.25)
+            return max(base_max_candidates, 16), max(base_frontier_band, 0.2)
         if remaining_seconds <= 1.0:
             return max(4, min(base_max_candidates, 4)), min(base_frontier_band, 0.05)
         if remaining_seconds <= 2.0:
@@ -398,12 +442,16 @@ class GreedyExtremePointAgent:
         position = tuple(round(value, 12) for value in candidate.position)
         return (
             -round(score.total_score, 12),
+            round(score.frontier_jump, 12),
+            -round(score.exact_density_after, 12),
+            round(candidate.position[2], 12),
+            round(score.cavity_penalty, 12),
+            round(score.skyline_roughness, 12),
+            round(candidate.position[1], 12),
             round(score.delta_x, 12),
             round(score.gap_penalty, 12),
-            round(candidate.position[2], 12),
             -round(score.support_reward, 12),
-            -round(score.contact_reward, 12),
-            round(candidate.position[1], 12),
+            -round(score.shared_contact_area_ratio, 12),
             candidate.orientation_index,
             position,
         )
@@ -427,6 +475,7 @@ class GreedyExtremePointAgent:
         self,
         view: DecisionStateView,
         *,
+        support_planes: list[SupportPlane],
         top_proxy_candidates: list[ProxyCandidate],
         deadline_monotonic: float,
     ) -> RankedCandidate | None:
@@ -438,14 +487,14 @@ class GreedyExtremePointAgent:
 
         for proxy in top_proxy_candidates[:4]:
             proxy_action = proxy.candidate.as_action(view.current_box.id)
-            exact_ranked = self._rank_fallback(view, proxy_action)
+            exact_ranked = self._rank_fallback(view, proxy_action, support_planes=support_planes)
             if exact_ranked is not None:
                 self._append_ranked_fallback(ranked_fallbacks, exact_ranked, seen_actions)
                 continue
             if self._remaining_seconds(deadline_monotonic) <= 0.0:
                 break
             aligned_action = self.engine.find_valid_action_at_current_xy(view.game_state, proxy_action)
-            aligned_ranked = self._rank_fallback(view, aligned_action) if aligned_action is not None else None
+            aligned_ranked = self._rank_fallback(view, aligned_action, support_planes=support_planes) if aligned_action is not None else None
             if aligned_ranked is not None:
                 self._append_ranked_fallback(ranked_fallbacks, aligned_ranked, seen_actions)
                 if ranked_fallbacks and self._remaining_seconds(deadline_monotonic) <= self.fallback_buffer_seconds:
@@ -454,7 +503,7 @@ class GreedyExtremePointAgent:
             if self._remaining_seconds(deadline_monotonic) <= 0.0:
                 break
             nearby_action = self.engine.find_valid_action_near(view.game_state, proxy_action)
-            nearby_ranked = self._rank_fallback(view, nearby_action) if nearby_action is not None else None
+            nearby_ranked = self._rank_fallback(view, nearby_action, support_planes=support_planes) if nearby_action is not None else None
             if nearby_ranked is not None:
                 self._append_ranked_fallback(ranked_fallbacks, nearby_ranked, seen_actions)
             if ranked_fallbacks and self._remaining_seconds(deadline_monotonic) <= self.fallback_buffer_seconds:
@@ -462,7 +511,7 @@ class GreedyExtremePointAgent:
 
         if not ranked_fallbacks and self._remaining_seconds(deadline_monotonic) > self.fallback_buffer_seconds:
             any_valid_action = self.engine.find_any_valid_action(view.game_state)
-            any_valid_ranked = self._rank_fallback(view, any_valid_action) if any_valid_action is not None else None
+            any_valid_ranked = self._rank_fallback(view, any_valid_action, support_planes=support_planes) if any_valid_action is not None else None
             if any_valid_ranked is not None:
                 self._append_ranked_fallback(ranked_fallbacks, any_valid_ranked, seen_actions)
 
@@ -470,6 +519,52 @@ class GreedyExtremePointAgent:
             return None
         ranked_fallbacks.sort(key=lambda item: item.ranking_key())
         return ranked_fallbacks[0]
+
+    def _should_proactively_stop(
+        self,
+        view: DecisionStateView,
+        ranked_candidate: RankedCandidate,
+    ) -> bool:
+        if float(view.game_state.density) < 0.4:
+            return False
+        score = ranked_candidate.score
+        materially_worse_density = score.exact_density_after + 1e-6 < float(view.game_state.density)
+        strongly_negative = score.total_score <= -1.5
+        instability_risk_high = score.instability_risk >= 0.85 and score.support_reward < 0.995
+        frontier_regression = score.frontier_jump > 0.0 and score.exact_density_after <= float(view.game_state.density) + 1e-4
+        return bool(strongly_negative and (materially_worse_density or instability_risk_high or frontier_regression))
+
+    def _score_details(self, score: Any) -> dict[str, float]:
+        return {
+            "total_score": score.total_score,
+            "exact_density_after": score.exact_density_after,
+            "frontier_jump": score.frontier_jump,
+            "delta_x": score.delta_x,
+            "gap_penalty": score.gap_penalty,
+            "front_gap": score.front_gap,
+            "frontier_slack": score.frontier_slack,
+            "future_sliver_penalty": score.future_sliver_penalty,
+            "fragmentation_penalty": score.fragmentation_penalty,
+            "cavity_penalty": score.cavity_penalty,
+            "left_gap": score.left_gap,
+            "right_gap": score.right_gap,
+            "support_reward": score.support_reward,
+            "contact_reward": score.contact_reward,
+            "shared_contact_area_ratio": score.shared_contact_area_ratio,
+            "wall_lock_bonus": score.wall_lock_bonus,
+            "footprint_match_below": score.footprint_match_below,
+            "frontier_reach_reward": score.frontier_reach_reward,
+            "future_usable_area_reward": score.future_usable_area_reward,
+            "shelf_completion_reward": score.shelf_completion_reward,
+            "slice_completion_reward": score.slice_completion_reward,
+            "support_commitment_reward": score.support_commitment_reward,
+            "top_plane_penalty": score.top_plane_penalty,
+            "skyline_roughness": score.skyline_roughness,
+            "instability_risk": score.instability_risk,
+            "backfill_reward": score.backfill_reward,
+            "left_fill_reward": score.left_fill_reward,
+            "low_height_reward": score.low_height_reward,
+        }
 
     def _append_ranked_fallback(
         self,
@@ -484,7 +579,57 @@ class GreedyExtremePointAgent:
         seen_actions.add(key)
         ranked_fallbacks.append(ranked_candidate)
 
-    def _rank_fallback(self, view: DecisionStateView, fallback_action: PlacementAction | None) -> RankedCandidate | None:
+    def _support_location_for_action(
+        self,
+        view: DecisionStateView,
+        action: PlacementAction,
+        orientation,
+        *,
+        support_planes: list[SupportPlane],
+    ) -> tuple[str, tuple[float, float, float, float] | None]:
+        z_support = action.position[2] + orientation.bottom_z
+        epsilon = view.config.support_plane_epsilon
+        if abs(z_support) <= epsilon:
+            return "floor", (0.0, 0.0, float(view.truck.depth), float(view.truck.width))
+        matching_plane = next((plane for plane in support_planes if abs(plane.z_support - z_support) <= epsilon), None)
+        if matching_plane is None:
+            matching_plane = next((plane for plane in extract_support_planes(view) if abs(plane.z_support - z_support) <= epsilon), None)
+        if matching_plane is None or not matching_plane.support_rectangles:
+            return f"fallback:{z_support:.6f}", None
+        bounds = (
+            action.position[0] + orientation.min_x,
+            action.position[1] + orientation.min_y,
+            action.position[0] + orientation.max_x,
+            action.position[1] + orientation.max_y,
+        )
+        components = _support_anchor_components(matching_plane, epsilon=view.config.geometry_epsilon)
+        best_component = None
+        best_overlap = -1.0
+        for component in components:
+            component_bounds = (
+                min(rectangle[0] for rectangle in component),
+                min(rectangle[1] for rectangle in component),
+                max(rectangle[2] for rectangle in component),
+                max(rectangle[3] for rectangle in component),
+            )
+            overlap_x = max(0.0, min(bounds[2], component_bounds[2]) - max(bounds[0], component_bounds[0]))
+            overlap_y = max(0.0, min(bounds[3], component_bounds[3]) - max(bounds[1], component_bounds[1]))
+            overlap_area = overlap_x * overlap_y
+            if overlap_area > best_overlap:
+                best_overlap = overlap_area
+                best_component = component_bounds
+        return (
+            matching_plane.plane_id,
+            None if best_component is None else tuple(float(value) for value in best_component),
+        )
+
+    def _rank_fallback(
+        self,
+        view: DecisionStateView,
+        fallback_action: PlacementAction | None,
+        *,
+        support_planes: list[SupportPlane],
+    ) -> RankedCandidate | None:
         if fallback_action is None:
             return None
         validation = self.engine.validate_place_action(view.game_state, fallback_action)
@@ -509,15 +654,31 @@ class GreedyExtremePointAgent:
                 vertical_axis_cos_tolerance=self.engine.config.vertical_axis_cos_tolerance,
             ),
         )
+        support_plane_id, support_component_bounds = self._support_location_for_action(
+            view,
+            normalized_action,
+            orientation,
+            support_planes=support_planes,
+        )
         candidate = CandidatePlacement(
             group_index=-1,
-            support_plane_id=f"fallback:{normalized_action.position[2] + orientation.bottom_z:.6f}",
+            support_plane_id=support_plane_id,
             support_plane_index=-1,
             orientation_index=orientation.index,
+            rotated_dimensions=orientation.rotated_dimensions,
+            bucket_name="fallback",
             anchor_style="fallback",
+            anchor_signature=(
+                support_plane_id,
+                "fallback",
+                round(normalized_action.position[0], 6),
+                round(normalized_action.position[1], 6),
+                round(normalized_action.position[2], 6),
+                orientation.index,
+            ),
             position=normalized_action.position,
             orientation_wxyz=normalized_action.orientation_wxyz,
-            support_component_bounds=None,
+            support_component_bounds=support_component_bounds,
             dedup_key=(),
             sort_key=(),
         )
@@ -527,6 +688,8 @@ class GreedyExtremePointAgent:
             orientation,
             support_ratio=validation.support_ratio,
             weights=self.score_weights,
+            preferred_support_plane_id=self._preferred_support_plane_id,
+            preferred_support_component_bounds=self._preferred_support_component_bounds,
         )
         return RankedCandidate(
             candidate=candidate,
@@ -549,28 +712,20 @@ class GreedyExtremePointAgent:
         decision_time_ms: float,
     ) -> None:
         score = ranked_candidate.score
+        self._preferred_support_plane_id = (
+            None if ranked_candidate.candidate.support_plane_id == "floor" else ranked_candidate.candidate.support_plane_id
+        )
+        self._preferred_support_component_bounds = ranked_candidate.candidate.support_component_bounds
         self._last_choice = {
             "chosen_action": {
                 "box_id": ranked_candidate.action.box_id,
                 "position": list(ranked_candidate.action.position),
                 "orientation_wxyz": list(ranked_candidate.action.orientation_wxyz),
             },
-            "total_score": score.total_score,
-            "delta_x": score.delta_x,
-            "gap_penalty": score.gap_penalty,
-            "front_gap": score.front_gap,
-            "frontier_slack": score.frontier_slack,
-            "future_sliver_penalty": score.future_sliver_penalty,
-            "fragmentation_penalty": score.fragmentation_penalty,
-            "left_gap": score.left_gap,
-            "right_gap": score.right_gap,
-            "support_reward": score.support_reward,
-            "contact_reward": score.contact_reward,
-            "frontier_reach_reward": score.frontier_reach_reward,
-            "future_usable_area_reward": score.future_usable_area_reward,
-            "shelf_completion_reward": score.shelf_completion_reward,
+            **self._score_details(score),
             "support_ratio": ranked_candidate.support_ratio,
             "fallback_used": fallback_used,
+            "proactive_stop": False,
             "parallel_used": summary.parallel_used,
             "candidates_generated": summary.generated_count,
             "candidates_validated": summary.validated_count,

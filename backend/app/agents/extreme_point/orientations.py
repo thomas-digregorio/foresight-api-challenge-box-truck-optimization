@@ -44,6 +44,11 @@ def _orientation_option_from_quaternion(
     return OrientationOption(
         index=index,
         permutation=permutation,
+        rotated_dimensions=(
+            float(dimensions[permutation[0]]),
+            float(dimensions[permutation[1]]),
+            float(dimensions[permutation[2]]),
+        ),
         orientation_wxyz=canonicalize_quaternion_sign(orientation_wxyz),
         min_x=float(min_x),
         max_x=float(max_x),
@@ -80,8 +85,12 @@ def build_orientation_option_for_quaternion(
     )
 
 
+def quaternion_for_orientation(option: OrientationOption) -> tuple[float, float, float, float]:
+    return option.orientation_wxyz
+
+
 def get_orthogonal_orientations_wxyz() -> list[tuple[float, float, float, float]]:
-    options = get_orthogonal_orientation_options((1.0, 1.0, 1.0), vertical_axis_cos_tolerance=0.99)
+    options = get_orthogonal_orientation_options((1.0, 2.0, 3.0), vertical_axis_cos_tolerance=0.99)
     return [option.orientation_wxyz for option in options]
 
 
@@ -104,10 +113,19 @@ def get_orthogonal_orientation_options(
         )
     ordered.sort(key=lambda item: item[0])
     options: list[OrientationOption] = []
-    for index, (_, permutation, quaternion_wxyz) in enumerate(ordered):
+    seen_rotated_dimensions: set[tuple[float, float, float]] = set()
+    for _, permutation, quaternion_wxyz in ordered:
+        rotated_dimensions = (
+            round(float(dimensions[permutation[0]]), 12),
+            round(float(dimensions[permutation[1]]), 12),
+            round(float(dimensions[permutation[2]]), 12),
+        )
+        if rotated_dimensions in seen_rotated_dimensions:
+            continue
+        seen_rotated_dimensions.add(rotated_dimensions)
         options.append(
             _orientation_option_from_quaternion(
-                index=index,
+                index=len(options),
                 permutation=permutation,
                 dimensions=dimensions,
                 orientation_wxyz=quaternion_wxyz,

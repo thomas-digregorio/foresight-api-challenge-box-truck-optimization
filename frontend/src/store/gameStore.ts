@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { fetchStatus, placeBox, previewPlacement, startGame, stopGame } from "../lib/api";
+import { fetchSpectatorStatus, fetchStatus, placeBox, previewPlacement, startGame, stopGame } from "../lib/api";
 import { ORIENTATION_PRESETS, eulerDegreesToQuaternionWxyz, normalizeQuaternionWxyz, quaternionWxyzToEulerDegrees } from "../lib/quaternion";
 import type { BoxPayload, GameState, Pose, PreviewResponse, QuaternionWxyz, Vec3 } from "../types/game";
 
@@ -8,6 +8,9 @@ type GameMode = "idle" | "playing" | "finished";
 type GameStore = {
   mode: GameMode;
   game: GameState | null;
+  isSpectating: boolean;
+  spectatorGameId: string | null;
+  spectatorApiVariant: "local" | "challenge" | null;
   pose: Pose;
   preview: PreviewResponse | null;
   isStarting: boolean;
@@ -24,6 +27,8 @@ type GameStore = {
   autoProjectToSupport: boolean;
   seed: number | null;
   startNewGame: () => Promise<void>;
+  attachToGame: (gameId: string) => Promise<void>;
+  exitSpectatorMode: () => void;
   refreshStatus: () => Promise<void>;
   syncPreview: () => Promise<void>;
   confirmPlacement: () => Promise<void>;
@@ -107,6 +112,9 @@ function actionToPose(
 export const useGameStore = create<GameStore>((set, get) => ({
   mode: "idle",
   game: null,
+  isSpectating: false,
+  spectatorGameId: null,
+  spectatorApiVariant: null,
   pose: { position: [0.5, 1.3, 0.5], orientationWxyz: [1, 0, 0, 0] },
   preview: null,
   isStarting: false,
@@ -131,6 +139,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const pose = defaultPoseForBox(game.current_box, game.truck);
       set({
         seed,
+        isSpectating: false,
+        spectatorGameId: null,
+        spectatorApiVariant: null,
         mode: game.game_status === "in_progress" ? "playing" : "finished",
         game,
         preview: null,
@@ -149,23 +160,73 @@ export const useGameStore = create<GameStore>((set, get) => ({
       set({ isStarting: false, error: error instanceof Error ? error.message : "Failed to start a game." });
     }
   },
+  attachToGame: async (gameId) => {
+    const trimmedGameId = gameId.trim();
+    if (!trimmedGameId) {
+      set({ error: "Enter a game ID to spectate." });
+      return;
+    }
+    set({ isStarting: true, error: null });
+    try {
+      const { game: snapshot, variant } = await fetchSpectatorStatus(trimmedGameId);
+      const pose = defaultPoseForBox(snapshot.current_box, snapshot.truck);
+      set({
+        seed: null,
+        isSpectating: true,
+        spectatorGameId: snapshot.game_id,
+        spectatorApiVariant: variant,
+        mode: snapshot.game_status === "in_progress" ? "playing" : "finished",
+        game: snapshot,
+        preview: null,
+        pose,
+        poseVersion: 1,
+        previewPoseVersion: 0,
+        isPreviewSyncing: false,
+        autoProjectToSupport: false,
+        isStarting: false,
+        cameraResetToken: get().cameraResetToken + 1,
+      });
+    } catch (error) {
+      set({
+        isStarting: false,
+        error: error instanceof Error ? error.message : "Failed to attach to the game.",
+      });
+    }
+  },
+  exitSpectatorMode: () =>
+    set({
+      mode: "idle",
+      game: null,
+      isSpectating: false,
+      spectatorGameId: null,
+      spectatorApiVariant: null,
+      preview: null,
+      pose: defaultPoseForBox(null, null),
+      poseVersion: 0,
+      previewPoseVersion: 0,
+      isPreviewSyncing: false,
+      autoProjectToSupport: false,
+      error: null,
+    }),
   refreshStatus: async () => {
     const game = get().game;
     if (!game) {
       return;
     }
     try {
-      const snapshot = await fetchStatus(game.game_id);
+      const { game: snapshot } = get().isSpectating
+        ? await fetchSpectatorStatus(game.game_id, get().spectatorApiVariant ?? undefined)
+        : { game: await fetchStatus(game.game_id) };
       const previousBoxId = game.current_box?.id;
       const boxChanged = snapshot.current_box?.id !== previousBoxId;
-      const nextPose = boxChanged ? defaultPoseForBox(snapshot.current_box, snapshot.truck) : get().pose;
+      const nextPose = boxChanged || get().isSpectating ? defaultPoseForBox(snapshot.current_box, snapshot.truck) : get().pose;
       set({
         game: snapshot,
         pose: nextPose,
-        preview: boxChanged || snapshot.game_status !== "in_progress" ? null : get().preview,
+        preview: get().isSpectating || boxChanged || snapshot.game_status !== "in_progress" ? null : get().preview,
         poseVersion: boxChanged ? get().poseVersion + 1 : get().poseVersion,
-        previewPoseVersion: boxChanged || snapshot.game_status !== "in_progress" ? 0 : get().previewPoseVersion,
-        isPreviewSyncing: boxChanged && snapshot.game_status === "in_progress",
+        previewPoseVersion: get().isSpectating || boxChanged || snapshot.game_status !== "in_progress" ? 0 : get().previewPoseVersion,
+        isPreviewSyncing: !get().isSpectating && boxChanged && snapshot.game_status === "in_progress",
         autoProjectToSupport: false,
         mode: snapshot.game_status === "in_progress" ? "playing" : "finished",
       });
@@ -176,7 +237,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   syncPreview: async () => {
     const game = get().game;
     const currentBox = game?.current_box;
-    if (!game || !currentBox || game.game_status !== "in_progress") {
+    if (!game || !currentBox || game.game_status !== "in_progress" || get().isSpectating) {
       return;
     }
     const requestId = get().previewRequestId + 1;
@@ -262,6 +323,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (
       !game ||
       !currentBox ||
+      get().isSpectating ||
       get().isPlacing ||
       get().isPreviewSyncing ||
       !preview?.is_valid ||
@@ -300,6 +362,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!game) {
       return;
     }
+    if (get().isSpectating) {
+      get().exitSpectatorMode();
+      return;
+    }
     try {
       const snapshot = await stopGame(game.game_id);
       set({ game: snapshot, mode: "finished", preview: null, isPreviewSyncing: false, autoProjectToSupport: false });
@@ -309,6 +375,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
   setPosition: (partial) => {
     set((state) => {
+      if (state.isSpectating) {
+        return state;
+      }
       const nextPose = mergedPose(state.pose, partial, state.game);
       if (samePose(state.pose, nextPose)) {
         return state;
@@ -326,22 +395,24 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
   setQuaternion: (quaternion) => {
     set((state) => ({
-      ...(samePose(state.pose, {
-        ...state.pose,
-        orientationWxyz: normalizeQuaternionWxyz(quaternion),
-      })
+      ...(state.isSpectating
         ? {}
-        : {
-            pose: {
+        : samePose(state.pose, {
               ...state.pose,
               orientationWxyz: normalizeQuaternionWxyz(quaternion),
-            },
-            preview: null,
-            poseVersion: state.poseVersion + 1,
-            previewPoseVersion: 0,
-            isPreviewSyncing: true,
-            autoProjectToSupport: false,
-          }),
+            })
+          ? {}
+          : {
+              pose: {
+                ...state.pose,
+                orientationWxyz: normalizeQuaternionWxyz(quaternion),
+              },
+              preview: null,
+              poseVersion: state.poseVersion + 1,
+              previewPoseVersion: 0,
+              isPreviewSyncing: true,
+              autoProjectToSupport: false,
+            }),
     }));
   },
   setEuler: (partial) => {
@@ -352,6 +423,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       partial.yaw ?? yaw,
     );
     set((state) => {
+      if (state.isSpectating) {
+        return state;
+      }
       const nextPose = {
         ...state.pose,
         orientationWxyz: nextQuaternion,
@@ -371,6 +445,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
   nudgePosition: (delta) => {
     set((state) => {
+      if (state.isSpectating) {
+        return state;
+      }
       const [x, y, z] = state.pose.position;
       const nextPose = mergedPose(
         state.pose,

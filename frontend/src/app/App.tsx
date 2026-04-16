@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect } from "react";
+import { Suspense, lazy, useEffect, useRef } from "react";
 import { GameHUD } from "../features/game/GameHUD";
 import { ORIENTATION_PRESETS } from "../lib/quaternion";
 import { useGameStore } from "../store/gameStore";
@@ -28,7 +28,9 @@ export function App() {
   const mode = useGameStore((state) => state.mode);
   const game = useGameStore((state) => state.game);
   const preview = useGameStore((state) => state.preview);
+  const isSpectating = useGameStore((state) => state.isSpectating);
   const poseVersion = useGameStore((state) => state.poseVersion);
+  const attachToGame = useGameStore((state) => state.attachToGame);
   const syncPreview = useGameStore((state) => state.syncPreview);
   const refreshStatus = useGameStore((state) => state.refreshStatus);
   const confirmPlacement = useGameStore((state) => state.confirmPlacement);
@@ -37,20 +39,31 @@ export function App() {
   const resetCamera = useGameStore((state) => state.resetCamera);
   const zoomCamera = useGameStore((state) => state.zoomCamera);
 
+  const attemptedSpectateRef = useRef<string | null>(null);
+
   useEffect(() => {
     void import("../features/game/SceneCanvas");
     void import("../components/MiniBoxPreview");
   }, []);
 
   useEffect(() => {
-    if (mode !== "playing" || !game?.current_box) {
+    const spectatorGameId = new URLSearchParams(window.location.search).get("spectate");
+    if (!spectatorGameId || attemptedSpectateRef.current === spectatorGameId) {
+      return;
+    }
+    attemptedSpectateRef.current = spectatorGameId;
+    void attachToGame(spectatorGameId);
+  }, [attachToGame]);
+
+  useEffect(() => {
+    if (mode !== "playing" || !game?.current_box || isSpectating) {
       return;
     }
     const timeoutId = window.setTimeout(() => {
       void syncPreview();
     }, 80);
     return () => window.clearTimeout(timeoutId);
-  }, [game?.current_box?.id, mode, poseVersion, syncPreview]);
+  }, [game?.current_box?.id, isSpectating, mode, poseVersion, syncPreview]);
 
   useEffect(() => {
     if (mode !== "playing" || !game) {
@@ -58,9 +71,9 @@ export function App() {
     }
     const intervalId = window.setInterval(() => {
       void refreshStatus();
-    }, 700);
+    }, isSpectating ? 250 : 700);
     return () => window.clearInterval(intervalId);
-  }, [game, mode, refreshStatus]);
+  }, [game, isSpectating, mode, refreshStatus]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -68,6 +81,22 @@ export function App() {
         return;
       }
       if (mode !== "playing") {
+        return;
+      }
+      if (isSpectating) {
+        switch (event.key.toLowerCase()) {
+          case "i":
+            zoomCamera("out");
+            break;
+          case "o":
+            zoomCamera("in");
+            break;
+          case "r":
+            resetCamera();
+            break;
+          default:
+            break;
+        }
         return;
       }
       const presetIndex = Number(event.key) - 1;
@@ -110,7 +139,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [applyPreset, confirmPlacement, mode, nudgePosition, preview?.is_valid, resetCamera, zoomCamera]);
+  }, [applyPreset, confirmPlacement, isSpectating, mode, nudgePosition, preview?.is_valid, resetCamera, zoomCamera]);
 
   return (
     <main className="relative h-screen w-screen overflow-hidden bg-stone-200">
