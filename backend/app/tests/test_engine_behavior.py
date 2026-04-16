@@ -6,7 +6,7 @@ from app.models.entities import CurrentBox, PlacementAction, PlacedBox, PreviewA
 from app.tests.conftest import make_state
 
 
-def test_support_overlap_rule_uses_ninety_percent_threshold(engine) -> None:
+def test_support_overlap_rule_uses_seventy_percent_threshold(engine) -> None:
     state = make_state(
         current_box=CurrentBox(id="top", dimensions=(0.5, 0.5, 0.5), weight=10.0),
         placed_boxes=[
@@ -23,7 +23,7 @@ def test_support_overlap_rule_uses_ninety_percent_threshold(engine) -> None:
         state,
         PlacementAction(
             box_id="top",
-            position=(0.295, 0.5, 0.75),
+            position=(0.395, 0.5, 0.75),
             orientation_wxyz=(1.0, 0.0, 0.0, 0.0),
         ),
     )
@@ -31,14 +31,15 @@ def test_support_overlap_rule_uses_ninety_percent_threshold(engine) -> None:
         state,
         PlacementAction(
             box_id="top",
-            position=(0.305, 0.5, 0.75),
+            position=(0.405, 0.5, 0.75),
             orientation_wxyz=(1.0, 0.0, 0.0, 0.0),
         ),
     )
     assert valid.is_valid is True
     assert invalid.is_valid is False
     assert invalid.category == "insufficient_support"
-    assert invalid.support_ratio == pytest.approx(0.89)
+    assert valid.support_ratio == pytest.approx(0.71)
+    assert invalid.support_ratio == pytest.approx(0.69)
 
 
 def test_density_calculation_uses_max_x_reached(engine) -> None:

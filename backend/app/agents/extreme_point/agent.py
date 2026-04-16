@@ -66,8 +66,6 @@ class GreedyExtremePointAgent:
             width=self.engine.config.truck.width,
             height=self.engine.config.truck.height,
         )
-        self._preferred_support_plane_id: str | None = None
-        self._preferred_support_component_bounds: tuple[float, float, float, float] | None = None
 
     def select_action(self, raw_state: dict[str, Any]) -> dict[str, Any] | None:
         if raw_state.get("truck") is not None:
@@ -180,8 +178,6 @@ class GreedyExtremePointAgent:
                 groups,
                 engine=self.engine,
                 weights=self.score_weights,
-                preferred_support_plane_id=self._preferred_support_plane_id,
-                preferred_support_component_bounds=self._preferred_support_component_bounds,
                 parallel=self.parallel,
                 max_workers=self._resolved_max_workers,
                 parallel_candidate_threshold=self.parallel_candidate_threshold,
@@ -447,9 +443,8 @@ class GreedyExtremePointAgent:
             round(candidate.position[2], 12),
             round(score.cavity_penalty, 12),
             round(score.skyline_roughness, 12),
+            round(score.instability_risk, 12),
             round(candidate.position[1], 12),
-            round(score.delta_x, 12),
-            round(score.gap_penalty, 12),
             -round(score.support_reward, 12),
             -round(score.shared_contact_area_ratio, 12),
             candidate.orientation_index,
@@ -539,31 +534,13 @@ class GreedyExtremePointAgent:
             "total_score": score.total_score,
             "exact_density_after": score.exact_density_after,
             "frontier_jump": score.frontier_jump,
-            "delta_x": score.delta_x,
-            "gap_penalty": score.gap_penalty,
-            "front_gap": score.front_gap,
-            "frontier_slack": score.frontier_slack,
-            "future_sliver_penalty": score.future_sliver_penalty,
-            "fragmentation_penalty": score.fragmentation_penalty,
             "cavity_penalty": score.cavity_penalty,
-            "left_gap": score.left_gap,
-            "right_gap": score.right_gap,
             "support_reward": score.support_reward,
-            "contact_reward": score.contact_reward,
             "shared_contact_area_ratio": score.shared_contact_area_ratio,
             "wall_lock_bonus": score.wall_lock_bonus,
             "footprint_match_below": score.footprint_match_below,
-            "frontier_reach_reward": score.frontier_reach_reward,
-            "future_usable_area_reward": score.future_usable_area_reward,
-            "shelf_completion_reward": score.shelf_completion_reward,
-            "slice_completion_reward": score.slice_completion_reward,
-            "support_commitment_reward": score.support_commitment_reward,
-            "top_plane_penalty": score.top_plane_penalty,
             "skyline_roughness": score.skyline_roughness,
             "instability_risk": score.instability_risk,
-            "backfill_reward": score.backfill_reward,
-            "left_fill_reward": score.left_fill_reward,
-            "low_height_reward": score.low_height_reward,
         }
 
     def _append_ranked_fallback(
@@ -688,8 +665,6 @@ class GreedyExtremePointAgent:
             orientation,
             support_ratio=validation.support_ratio,
             weights=self.score_weights,
-            preferred_support_plane_id=self._preferred_support_plane_id,
-            preferred_support_component_bounds=self._preferred_support_component_bounds,
         )
         return RankedCandidate(
             candidate=candidate,
@@ -712,10 +687,6 @@ class GreedyExtremePointAgent:
         decision_time_ms: float,
     ) -> None:
         score = ranked_candidate.score
-        self._preferred_support_plane_id = (
-            None if ranked_candidate.candidate.support_plane_id == "floor" else ranked_candidate.candidate.support_plane_id
-        )
-        self._preferred_support_component_bounds = ranked_candidate.candidate.support_component_bounds
         self._last_choice = {
             "chosen_action": {
                 "box_id": ranked_candidate.action.box_id,

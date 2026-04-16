@@ -242,10 +242,8 @@ def test_scoring_prefers_back_left_fill_on_empty_truck(engine) -> None:
     front_score = compute_score_breakdown(view, front_left, orientation, support_ratio=1.0, weights=ScoreWeights())
     back_score = compute_score_breakdown(view, back_left, orientation, support_ratio=1.0, weights=ScoreWeights())
 
-    assert front_score.delta_x < back_score.delta_x
     assert front_score.exact_density_after > back_score.exact_density_after
     assert back_score.frontier_jump > front_score.frontier_jump
-    assert back_score.backfill_reward > front_score.backfill_reward
     assert front_score.total_score > back_score.total_score
 
 
@@ -409,7 +407,7 @@ def test_scoring_prefers_lower_height_for_stability(engine) -> None:
     low_score = compute_score_breakdown(view, low_candidate, orientation, support_ratio=1.0, weights=ScoreWeights())
     high_score = compute_score_breakdown(view, high_candidate, orientation, support_ratio=1.0, weights=ScoreWeights())
 
-    assert low_score.low_height_reward > high_score.low_height_reward
+    assert low_score.instability_risk < high_score.instability_risk
     assert low_score.total_score > high_score.total_score
 
 
@@ -440,12 +438,12 @@ def test_scoring_prefers_left_fill_when_backfill_is_equal(engine) -> None:
     left_score = compute_score_breakdown(view, back_left, orientation, support_ratio=1.0, weights=ScoreWeights())
     right_score = compute_score_breakdown(view, back_right, orientation, support_ratio=1.0, weights=ScoreWeights())
 
-    assert left_score.delta_x == pytest.approx(right_score.delta_x)
-    assert left_score.left_fill_reward > right_score.left_fill_reward
+    assert left_score.frontier_jump == pytest.approx(right_score.frontier_jump)
+    assert left_score.skyline_roughness < right_score.skyline_roughness
     assert left_score.total_score > right_score.total_score
 
 
-def test_scoring_penalizes_future_slivers_on_support_components(engine) -> None:
+def test_scoring_penalizes_cavity_creation_on_support_components(engine) -> None:
     state = make_state(
         current_box=CurrentBox(id="box", dimensions=(0.5, 0.5, 0.5), weight=5.0),
         placed_boxes=[
@@ -475,7 +473,7 @@ def test_scoring_penalizes_future_slivers_on_support_components(engine) -> None:
     flush_score = compute_score_breakdown(view, flush_candidate, orientation, support_ratio=1.0, weights=ScoreWeights())
     centered_score = compute_score_breakdown(view, centered_candidate, orientation, support_ratio=1.0, weights=ScoreWeights())
 
-    assert centered_score.future_sliver_penalty > flush_score.future_sliver_penalty
+    assert centered_score.cavity_penalty > flush_score.cavity_penalty
     assert centered_score.total_score < flush_score.total_score
 
 
@@ -889,20 +887,11 @@ def test_explain_last_choice_contains_required_fields(engine) -> None:
         "total_score",
         "exact_density_after",
         "frontier_jump",
-        "delta_x",
-        "front_gap",
-        "frontier_slack",
-        "future_sliver_penalty",
         "cavity_penalty",
-        "left_gap",
-        "right_gap",
         "support_reward",
-        "contact_reward",
         "shared_contact_area_ratio",
         "wall_lock_bonus",
         "footprint_match_below",
-        "frontier_reach_reward",
-        "slice_completion_reward",
         "skyline_roughness",
         "instability_risk",
         "fallback_used",

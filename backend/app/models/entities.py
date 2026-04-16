@@ -85,7 +85,7 @@ class EngineConfig:
     )
     weight_range: tuple[float, float] = (4.0, 40.0)
     timeout_seconds: float = 10.0
-    support_threshold: float = 0.9
+    support_threshold: float = 0.7
     geometry_epsilon: float = 1e-6
     support_plane_epsilon: float = 5e-3
     collision_epsilon: float = 1e-5

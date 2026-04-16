@@ -14,7 +14,6 @@ from app.agents.extreme_point.types import (
     CandidateGroup,
     CandidatePlacement,
     EvaluationSummary,
-    RectBounds,
     ProxyCandidate,
     RankedCandidate,
     ScoreBreakdown,
@@ -40,9 +39,8 @@ class CandidateEstimate:
             round(self.candidate.position[2], 12),
             round(self.proxy_score.cavity_penalty, 12),
             round(self.proxy_score.skyline_roughness, 12),
+            round(self.proxy_score.instability_risk, 12),
             round(self.candidate.position[1], 12),
-            round(self.proxy_score.delta_x, 12),
-            round(self.proxy_score.gap_penalty, 12),
             -round(self.proxy_score.support_reward, 12),
             -round(self.proxy_score.shared_contact_area_ratio, 12),
             self.candidate.orientation_index,
@@ -99,8 +97,6 @@ def _estimate_candidate(
     group: CandidateGroup,
     *,
     weights: ScoreWeights,
-    preferred_support_plane_id: str | None = None,
-    preferred_support_component_bounds: RectBounds | None = None,
     deadline_monotonic: float | None = None,
 ) -> list[CandidateEstimate]:
     estimates: list[CandidateEstimate] = []
@@ -116,8 +112,6 @@ def _estimate_candidate(
                     group.orientation,
                     support_ratio=None,
                     weights=weights,
-                    preferred_support_plane_id=preferred_support_plane_id,
-                    preferred_support_component_bounds=preferred_support_component_bounds,
                 ),
             )
         )
@@ -217,12 +211,12 @@ def _apply_frontier_band(
 ) -> list[CandidateEstimate]:
     if frontier_band_delta_x is None or not estimates:
         return list(estimates)
-    min_delta_x = min(estimate.proxy_score.delta_x for estimate in estimates)
-    limit = min_delta_x + frontier_band_delta_x + DOMINANCE_EPSILON
+    min_frontier_jump = min(estimate.proxy_score.frontier_jump for estimate in estimates)
+    limit = min_frontier_jump + frontier_band_delta_x + DOMINANCE_EPSILON
     preserved = [
         estimate
         for estimate in estimates
-        if estimate.proxy_score.delta_x <= limit
+        if estimate.proxy_score.frontier_jump <= limit
         or estimate.candidate.anchor_style.startswith(("bucket_back_wall_", "bucket_lock_", "bucket_stack_"))
     ]
     protected_top = sorted(estimates, key=lambda estimate: estimate.ranking_key())[:4]
@@ -234,21 +228,23 @@ def _apply_frontier_band(
 
 def _dominates(lhs: CandidateEstimate, rhs: CandidateEstimate) -> bool:
     no_worse = (
-        lhs.proxy_score.delta_x <= rhs.proxy_score.delta_x + DOMINANCE_EPSILON
-        and lhs.proxy_score.front_gap <= rhs.proxy_score.front_gap + DOMINANCE_EPSILON
-        and lhs.proxy_score.frontier_slack <= rhs.proxy_score.frontier_slack + DOMINANCE_EPSILON
-        and lhs.proxy_score.left_gap <= rhs.proxy_score.left_gap + DOMINANCE_EPSILON
-        and lhs.proxy_score.right_gap <= rhs.proxy_score.right_gap + DOMINANCE_EPSILON
-        and lhs.proxy_score.contact_reward + DOMINANCE_EPSILON >= rhs.proxy_score.contact_reward
+        lhs.proxy_score.frontier_jump <= rhs.proxy_score.frontier_jump + DOMINANCE_EPSILON
+        and lhs.proxy_score.cavity_penalty <= rhs.proxy_score.cavity_penalty + DOMINANCE_EPSILON
+        and lhs.proxy_score.skyline_roughness <= rhs.proxy_score.skyline_roughness + DOMINANCE_EPSILON
+        and lhs.proxy_score.instability_risk <= rhs.proxy_score.instability_risk + DOMINANCE_EPSILON
+        and lhs.proxy_score.exact_density_after + DOMINANCE_EPSILON >= rhs.proxy_score.exact_density_after
+        and lhs.proxy_score.support_reward + DOMINANCE_EPSILON >= rhs.proxy_score.support_reward
+        and lhs.proxy_score.shared_contact_area_ratio + DOMINANCE_EPSILON >= rhs.proxy_score.shared_contact_area_ratio
         and lhs.candidate.position[2] <= rhs.candidate.position[2] + DOMINANCE_EPSILON
     )
     strictly_better = (
-        lhs.proxy_score.delta_x < rhs.proxy_score.delta_x - DOMINANCE_EPSILON
-        or lhs.proxy_score.front_gap < rhs.proxy_score.front_gap - DOMINANCE_EPSILON
-        or lhs.proxy_score.frontier_slack < rhs.proxy_score.frontier_slack - DOMINANCE_EPSILON
-        or lhs.proxy_score.left_gap < rhs.proxy_score.left_gap - DOMINANCE_EPSILON
-        or lhs.proxy_score.right_gap < rhs.proxy_score.right_gap - DOMINANCE_EPSILON
-        or lhs.proxy_score.contact_reward > rhs.proxy_score.contact_reward + DOMINANCE_EPSILON
+        lhs.proxy_score.frontier_jump < rhs.proxy_score.frontier_jump - DOMINANCE_EPSILON
+        or lhs.proxy_score.cavity_penalty < rhs.proxy_score.cavity_penalty - DOMINANCE_EPSILON
+        or lhs.proxy_score.skyline_roughness < rhs.proxy_score.skyline_roughness - DOMINANCE_EPSILON
+        or lhs.proxy_score.instability_risk < rhs.proxy_score.instability_risk - DOMINANCE_EPSILON
+        or lhs.proxy_score.exact_density_after > rhs.proxy_score.exact_density_after + DOMINANCE_EPSILON
+        or lhs.proxy_score.support_reward > rhs.proxy_score.support_reward + DOMINANCE_EPSILON
+        or lhs.proxy_score.shared_contact_area_ratio > rhs.proxy_score.shared_contact_area_ratio + DOMINANCE_EPSILON
         or lhs.candidate.position[2] < rhs.candidate.position[2] - DOMINANCE_EPSILON
     )
     return bool(no_worse and strictly_better)
@@ -357,8 +353,6 @@ def _evaluate_group(
             group.orientation,
             support_ratio=validation.support_ratio,
             weights=weights,
-            preferred_support_plane_id=None,
-            preferred_support_component_bounds=None,
         )
         ranked_candidates.append(
             RankedCandidate(
@@ -384,8 +378,6 @@ def evaluate_candidate_groups(
     *,
     engine: TruckPackingEngine,
     weights: ScoreWeights,
-    preferred_support_plane_id: str | None = None,
-    preferred_support_component_bounds: RectBounds | None = None,
     parallel: bool,
     max_workers: int | None,
     parallel_candidate_threshold: int,
@@ -431,8 +423,6 @@ def evaluate_candidate_groups(
             view,
             group,
             weights=weights,
-            preferred_support_plane_id=preferred_support_plane_id,
-            preferred_support_component_bounds=preferred_support_component_bounds,
             deadline_monotonic=deadline_monotonic,
         )
         raw_estimates_by_group[group.index] = (group, group_estimates)
